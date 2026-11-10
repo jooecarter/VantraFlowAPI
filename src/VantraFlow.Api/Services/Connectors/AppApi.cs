@@ -28,6 +28,14 @@ public sealed record AppWorkspace(Guid Id, string Name, string Role, bool CanCon
 /// <summary>What connecting hands back: the key Flow acts with (sealed at once) and its id (the origin marker).</summary>
 public sealed record AppConnectResult(string KeyId, string Key, Guid WorkspaceId, string WorkspaceName);
 
+/// <summary>
+/// The app's answer about a two-step code: <c>Ok</c> (Kind <c>totp</c> or <c>backup</c>), or why not
+/// (<c>wrong_code</c>, <c>too_many_attempts</c>, <c>challenge_expired</c>, <c>not_enabled</c>) in the app's words.
+/// </summary>
+public sealed record AppTwoFactorVerdict(bool Ok, string? Code = null, string? Error = null, string? Kind = null, int? BackupCodesLeft = null);
+
+internal sealed record AppTwoFactorStatus(bool Enabled);
+
 /// <summary>A webhook Flow registered in the app: its id there and its signing secret (sealed at once).</summary>
 public sealed record AppHook(string Id, string Secret);
 
@@ -66,12 +74,19 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
 
     private static string Cap(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
 
-    /// <summary>A two-minute JWT: who is asking (their VantraId) and for which Flow workspace, signed with the shared key.</summary>
-    public string Assertion(string vantraId, string? name, Guid flowWorkspaceId)
+    /// <summary>The <c>amr</c> on a session (and an assertion) that passed two-step sign-in.</summary>
+    public const string SecondStepAmr = "otp";
+
+    /// <summary>
+    /// A two-minute JWT: who is asking (their VantraId) and for which Flow workspace (empty at sign-in), signed with
+    /// the shared key; with <c>amr: otp</c> when their Flow session passed two-step sign-in.
+    /// </summary>
+    public string Assertion(string vantraId, string? name, Guid flowWorkspaceId, bool passedSecondStep = false)
     {
         var key = Key ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.");
         var claims = new List<Claim> { new("sub", vantraId), new("flow_ws", flowWorkspaceId.ToString()), new("jti", Guid.NewGuid().ToString()) };
         if (!string.IsNullOrWhiteSpace(name)) claims.Add(new Claim("name", name));
+        if (passedSecondStep) claims.Add(new Claim("amr", SecondStepAmr));
         var now = DateTime.UtcNow;
         var token = new JwtSecurityToken(config["Jwt:Issuer"] ?? "vantra", Audience, claims, now, now.AddMinutes(2),
             new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256));
@@ -83,6 +98,14 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
 
     public Task<AppConnectResult> ConnectAsync(string assertion, Guid workspaceId, string flowWorkspaceName, CancellationToken ct) =>
         SendAsync<AppConnectResult>(HttpMethod.Post, "/api/integrations/flow/v1/connect", new { workspaceId, flowWorkspaceName }, null, assertion, ct);
+
+    /// <summary>Whether the person has the app's two-step sign-in on.</summary>
+    public async Task<bool> TwoFactorEnabledAsync(string assertion, CancellationToken ct) =>
+        (await SendAsync<AppTwoFactorStatus>(HttpMethod.Post, "/api/integrations/flow/v1/2fa/status", null, null, assertion, ct)).Enabled;
+
+    /// <summary>Checks a code against the app's two-step sign-in; Flow's challenge id caps the tries there too.</summary>
+    public Task<AppTwoFactorVerdict> TwoFactorVerifyAsync(string assertion, string code, Guid challengeId, CancellationToken ct) =>
+        SendAsync<AppTwoFactorVerdict>(HttpMethod.Post, "/api/integrations/flow/v1/2fa/verify", new { code, challengeId }, null, assertion, ct);
 
     /// <summary>Revokes the connection's key in the app (best effort: Flow forgets it either way).</summary>
     public Task DisconnectAsync(string key, CancellationToken ct) =>

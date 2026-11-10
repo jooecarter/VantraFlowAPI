@@ -46,11 +46,11 @@ public sealed record RegisterRequest(
     string Email,
     string Password);
 
-/// <summary>Password sign-in. <c>DeviceToken</c>: a trusted device's token from an earlier code step (skips the code while it's valid).</summary>
-public sealed record LoginRequest(string Email, string Password, string? DeviceToken = null);
+/// <summary>Password sign-in.</summary>
+public sealed record LoginRequest(string Email, string Password);
 
 /// <summary>Body for the social sign-in endpoints — the provider ID token.</summary>
-public sealed record SocialLoginRequest(string Token, string? DeviceToken = null);
+public sealed record SocialLoginRequest(string Token);
 
 /// <summary>
 /// Google sign-in body. Either an ID token (popup/GIS flow) OR an
@@ -60,8 +60,7 @@ public sealed record GoogleLoginRequest(
     string? Token,
     string? Code,
     string? RedirectUri,
-    string? CodeVerifier,
-    string? DeviceToken = null);
+    string? CodeVerifier);
 
 /// <summary>Normalised identity extracted from a verified provider ID token.</summary>
 public sealed record ExternalUser(string Email, string? FirstName, string? LastName);
@@ -84,3 +83,12 @@ public sealed record AuthResponse(
     string Token,
     DateTime ExpiresAt,
     AuthUser User);
+
+/// <summary>The first step passed and the person has two-step sign-in on (in Vantra Orbit or Vantra Projects): finish with a code.</summary>
+public sealed record TwoFactorChallengeResponse(bool TwoFactorRequired, string Challenge);
+
+/// <summary>The code step: the challenge and the authenticator's 6 digits, or an Orbit backup code.</summary>
+public sealed record TwoFactorCompleteRequest(string? Challenge, string? Code);
+
+/// <summary>Signed in after the code step; <c>BackupCodesLeft</c> when an Orbit backup code was used.</summary>
+public sealed record TwoFactorSignInResponse(string Token, DateTime ExpiresAt, AuthUser User, int? BackupCodesLeft);

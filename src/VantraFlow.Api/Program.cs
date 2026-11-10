@@ -47,6 +47,11 @@ builder.Services.AddScoped<EngineRepository>();
 
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
+// Two-step sign-in: Orbit's and Projects', asked server to server (Services/Auth/TwoFactorSignIn.cs).
+builder.Services.AddSingleton<TwoFactorChallengeTokens>();
+builder.Services.AddSingleton<ITwoFactorApps, AppTwoFactorApps>();
+builder.Services.AddScoped<ITwoFactorGuards, TwoFactorGuards>();
+builder.Services.AddScoped<TwoFactorSignIn>();
 builder.Services.AddSingleton<GoogleTokenVerifier>();
 builder.Services.AddSingleton<MicrosoftTokenVerifier>();
 builder.Services.AddHttpClient(); // Google token exchange, Microsoft Graph

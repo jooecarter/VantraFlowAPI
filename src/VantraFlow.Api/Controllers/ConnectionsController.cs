@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using VantraFlow.Api.Data;
 using VantraFlow.Api.Models;
+using VantraFlow.Api.Services.Auth;
 using VantraFlow.Api.Services.Connectors;
 
 namespace VantraFlow.Api.Controllers;
@@ -17,10 +18,25 @@ namespace VantraFlow.Api.Controllers;
 /// Connecting: Flow signs a two-minute assertion for you (your VantraId, this workspace) that only the app's
 /// integration endpoints accept; the app checks you own or administer the workspace you chose there and hands
 /// back a key for it, which Flow seals at once (AES-256-GCM, bound to the connection's row) and never shows.
+/// Someone with two-step sign-in on (in Orbit or Projects) lists and connects only from a session that passed it
+/// (<c>amr: otp</c>): 403 <c>two_factor_required</c> otherwise. The assertion says so too, and the app checks again.
 /// </summary>
-public sealed class ConnectionsController(WorkspacesRepository workspaces, ConnectionsRepository repo, AppConnectors apps, Connections connections, ILogger<ConnectionsController> log)
+public sealed class ConnectionsController(WorkspacesRepository workspaces, ConnectionsRepository repo, AppConnectors apps, Connections connections,
+    TwoFactorSignIn twoFactor, ILogger<ConnectionsController> log)
     : FlowControllerBase(workspaces)
 {
+    /// <summary>Null when this session may connect apps; otherwise why not (it didn't pass the person's two-step sign-in).</summary>
+    private async Task<IActionResult?> SecondStepRefusalAsync(CancellationToken ct)
+    {
+        if (PassedSecondStep) return null;
+        try
+        {
+            if ((await twoFactor.EnabledInAsync(Sub, ct)).Count == 0) return null;
+        }
+        catch (TwoFactorUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
+        return StatusCode(403, new { error = "Sign out and in again with your two-step code to connect apps.", code = "two_factor_required" });
+    }
+
     [HttpGet("api/w/{workspaceId:guid}/apps")]
     public async Task<ActionResult<IReadOnlyList<AppDto>>> List(Guid workspaceId)
     {
@@ -37,7 +53,8 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (apps.For(app) is not { } api) return NotFound(new { error = "Vantra Flow doesn't connect to that app." });
-        try { return Ok(await api.WorkspacesAsync(api.Assertion(Sub, DisplayName, workspaceId), ct)); }
+        if (await SecondStepRefusalAsync(ct) is { } stop) return stop;
+        try { return Ok(await api.WorkspacesAsync(api.Assertion(Sub, DisplayName, workspaceId, PassedSecondStep), ct)); }
         catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
         catch (AppRefusedException e) { return StatusCode(e.Status is 401 or 403 ? 403 : 400, new { error = e.Message, code = e.Code }); }
     }
@@ -49,9 +66,10 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         if (refusal is not null) return refusal;
         if (apps.For(app) is not { } api) return NotFound(new { error = "Vantra Flow doesn't connect to that app." });
         if (body.WorkspaceId is not { } remote || remote == Guid.Empty) return BadRequest(new { error = "Choose a workspace." });
+        if (await SecondStepRefusalAsync(ct) is { } stop) return stop;
         var flowWs = (await Workspaces.GetAsync(workspaceId))!;
         AppConnectResult result;
-        try { result = await api.ConnectAsync(api.Assertion(Sub, DisplayName, workspaceId), remote, flowWs.Name, ct); }
+        try { result = await api.ConnectAsync(api.Assertion(Sub, DisplayName, workspaceId, PassedSecondStep), remote, flowWs.Name, ct); }
         catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
         catch (AppRefusedException e) { return StatusCode(e.Status is 401 or 403 ? 403 : e.Status == 402 ? 402 : 400, new { error = e.Message, code = e.Code }); }
 

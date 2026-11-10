@@ -20,6 +20,8 @@ public abstract class FlowControllerBase(WorkspacesRepository workspaces) : Cont
 {
     protected string Sub => User.FindFirstValue("sub") ?? "";
     protected string? Email => User.FindFirstValue("email");
+    /// <summary>This session passed two-step sign-in (<c>amr: otp</c>).</summary>
+    protected bool PassedSecondStep => User.FindAll("amr").Any(c => c.Value == Services.Connectors.AppApi.SecondStepAmr);
     protected string DisplayName
     {
         get

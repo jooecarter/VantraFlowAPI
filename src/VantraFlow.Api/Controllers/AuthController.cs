@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.RateLimiting;
 using VantraFlow.Api.Data;
 using VantraFlow.Api.Models;
 using VantraFlow.Api.Services;
+using VantraFlow.Api.Services.Auth;
+using VantraFlow.Api.Services.Connectors;
 
 namespace VantraFlow.Api.Controllers;
 
@@ -13,10 +15,17 @@ namespace VantraFlow.Api.Controllers;
 /// across the suite; BCrypt with a transparent upgrade of legacy plaintext rows; Google and Microsoft by verified ID
 /// token, matched to an account by email. The token is signed with the suite's <c>Jwt:Key</c> and issuer for
 /// Flow's own audience (<c>vantra-flow</c>), with the VantraId as <c>sub</c>.
+/// <para>
+/// Two-step sign-in, as Orbit's: when the person has it on in Vantra Orbit or Vantra Projects, a password, Google or
+/// Microsoft sign-in answers <c>{ twoFactorRequired, challenge }</c> instead of a session, and <c>POST api/auth/2fa</c>
+/// takes that challenge and a code (<see cref="TwoFactorSignIn"/>). The session then carries <c>amr: otp</c>.
+/// If the apps can't be asked, the sign-in stops (503 <c>two_factor_unavailable</c>); it never goes ahead without.
+/// </para>
 /// </summary>
 [ApiController]
 [Route("api/auth")]
-public sealed class AuthController(UsersRepository users, JwtTokenService jwt, GoogleTokenVerifier google, MicrosoftTokenVerifier microsoft) : ControllerBase
+public sealed class AuthController(UsersRepository users, JwtTokenService jwt, GoogleTokenVerifier google, MicrosoftTokenVerifier microsoft,
+    TwoFactorSignIn twoFactor, ILogger<AuthController> log) : ControllerBase
 {
     private const int BcryptWorkFactor = 11;
     public const string RateLimitPolicy = "auth";
@@ -35,7 +44,8 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
         var vantraId = Guid.NewGuid().ToString();
         // Transitional, as in Orbit: the legacy plaintext column stays in sync so the original Vantra app can still sign in.
         var userId = await users.CreateAsync(body.FirstName.Trim(), body.LastName?.Trim() ?? "", email, body.Password, hash, vantraId);
-        return Ok(Issue(new UserDetails { UserID = userId, FirstName = body.FirstName.Trim(), LastName = body.LastName?.Trim() ?? "", Email = email, VantraID = vantraId }));
+        // A new account: nothing to ask for yet (two-step sign-in is set up in Vantra Orbit).
+        return Ok(Issue(new UserDetails { UserID = userId, FirstName = body.FirstName.Trim(), LastName = body.LastName?.Trim() ?? "", Email = email, VantraID = vantraId }, Password));
     }
 
     [HttpPost("login")]
@@ -53,7 +63,7 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
             user.VantraID = Guid.NewGuid().ToString();
             await users.SetVantraIdAsync(user.UserID, user.VantraID);
         }
-        return Ok(Issue(user));
+        return await IssueOrChallengeAsync(user, Password, HttpContext.RequestAborted);
     }
 
     [HttpPost("google")]
@@ -72,7 +82,7 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
         }
         catch (Exception) { ext = null; }
         if (ext is null) return Unauthorized(new { error = "Could not verify your Google sign-in." });
-        return Ok(Issue(await FindOrCreateAsync(ext)));
+        return await IssueOrChallengeAsync(await FindOrCreateAsync(ext), "google", HttpContext.RequestAborted);
     }
 
     [HttpPost("microsoft")]
@@ -84,7 +94,32 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
         try { ext = await microsoft.VerifyAsync(body.Token); }
         catch (Exception) { ext = null; }
         if (ext is null) return Unauthorized(new { error = "Could not verify your Microsoft sign-in." });
-        return Ok(Issue(await FindOrCreateAsync(ext)));
+        return await IssueOrChallengeAsync(await FindOrCreateAsync(ext), "microsoft", HttpContext.RequestAborted);
+    }
+
+    /// <summary>
+    /// Finishes a sign-in that stopped at the two-step gate: the challenge it handed back and a code. 401 with
+    /// <c>invalid_code</c> (try again), <c>too_many_attempts</c> or <c>challenge_expired</c> (start again), as Orbit.
+    /// </summary>
+    [HttpPost("2fa")]
+    [EnableRateLimiting(RateLimitPolicy)]
+    public async Task<ActionResult<TwoFactorSignInResponse>> CompleteTwoFactor([FromBody] TwoFactorCompleteRequest body, CancellationToken ct)
+    {
+        var result = await twoFactor.CompleteAsync(body.Challenge, body.Code, ct);
+        if (result.Failure == TwoFactorFailure.Unavailable)
+            return StatusCode(503, new { error = result.Error, code = "two_factor_unavailable" });
+        if (!result.Ok)
+            return Unauthorized(new { error = result.Error, code = result.Failure switch
+            {
+                TwoFactorFailure.Expired => "challenge_expired",
+                TwoFactorFailure.TooManyAttempts => "too_many_attempts",
+                _ => "invalid_code",
+            } });
+
+        var user = await users.FindByVantraIdAsync(result.VantraId!);
+        if (user is null) return Unauthorized(new { error = TwoFactorSignIn.ExpiredMessage, code = "challenge_expired" });
+        var session = Issue(user, result.Method ?? Password, AppApi.SecondStepAmr);
+        return Ok(new TwoFactorSignInResponse(session.Token, session.ExpiresAt, session.User, result.BackupCodesLeft));
     }
 
     [HttpGet("me")]
@@ -122,9 +157,25 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
         return user;
     }
 
-    private AuthResponse Issue(UserDetails user)
+    private const string Password = "password";
+
+    /// <summary>A session now, or (two-step sign-in on in Orbit or Projects) a challenge to finish with a code.</summary>
+    private async Task<ActionResult> IssueOrChallengeAsync(UserDetails user, string method, CancellationToken ct)
     {
-        var (token, expiresAt) = jwt.Create(user);
+        string? challenge;
+        try { challenge = await twoFactor.GateAsync(user.VantraID!, method, ct); }
+        catch (TwoFactorUnavailableException e) { return StatusCode(503, new { error = e.Message, code = "two_factor_unavailable" }); }
+        if (challenge is not null)
+        {
+            log.LogInformation("Sign-in waits for a two-step code ({Method})", method);
+            return Ok(new TwoFactorChallengeResponse(true, challenge));
+        }
+        return Ok(Issue(user, method));
+    }
+
+    private AuthResponse Issue(UserDetails user, params string[] amr)
+    {
+        var (token, expiresAt) = jwt.Create(user, amr);
         return new AuthResponse(token, expiresAt, new AuthUser(user.VantraID ?? "", user.UserID, user.Email, user.FirstName, user.LastName));
     }
 }

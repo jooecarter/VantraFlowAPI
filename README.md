@@ -25,6 +25,15 @@ bash scripts/sqlcheck.sh
 - **Sign-in.** It uses the shared Vantra identity (`dbo.UserDetails` in the `Vantra` database), the suite's
   `Jwt:Key` and `Jwt:Issuer`, and Flow's own audience, `vantra-flow`. The VantraId is the token's `sub`. Password,
   Google and Microsoft sign-in work as in Orbit's `AuthController`.
+- **Two-step sign-in.** Flow honours the two-step sign-in people set up in Orbit or Projects (Flow doesn't set it
+  up: Orbit's Settings → Security does). Each app keeps it in its own database, so Flow asks them server to server
+  with the same signed assertion it connects with (`POST api/integrations/flow/v1/2fa/status` and `…/2fa/verify`).
+  When either has it on, password, Google and Microsoft sign-in answer `{ twoFactorRequired, challenge }`: a
+  5-minute token for its own audience, `vantra-flow-2fa`, which is never a session. `POST /api/auth/2fa` takes it
+  with the authenticator's code (or an Orbit backup code). Five tries per challenge (`flow.TwoFactorChallenges`,
+  and the apps count too), spent once it signs someone in. The session then carries `amr: otp`. Listing and
+  connecting an app's workspaces needs that when the person has two-step sign-in on, and the assertion carries it so
+  the app checks again. If an app can't answer, sign-in stops (503 `two_factor_unavailable`).
 - **Workspaces.** Flow has its own workspaces (`flow.Workspaces`), with owner, admin and member roles. Your first
   visit makes one for you. Each workspace links to one Orbit workspace and one Projects workspace through its
   connections. Only owners and admins connect apps.

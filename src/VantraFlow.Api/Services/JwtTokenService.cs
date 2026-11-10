@@ -34,7 +34,11 @@ public sealed class JwtTokenService
         _lifetimeMinutes = int.TryParse(config["Jwt:LifetimeMinutes"], out var m) ? m : 60 * 24 * 7;
     }
 
-    public (string token, DateTime expiresAt) Create(UserDetails user)
+    /// <summary>
+    /// A session. <paramref name="amr"/>: how it was signed in (<c>password</c>, <c>google</c>, <c>microsoft</c>), and
+    /// <c>otp</c> when it passed two-step sign-in, which connecting an app asks for (<see cref="Connectors.AppApi.SecondStepAmr"/>).
+    /// </summary>
+    public (string token, DateTime expiresAt) Create(UserDetails user, params string[] amr)
     {
         var expiresAt = DateTime.UtcNow.AddMinutes(_lifetimeMinutes);
 
@@ -47,6 +51,7 @@ public sealed class JwtTokenService
             new("uid", user.UserID.ToString()),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
+        claims.AddRange(amr.Distinct().Select(a => new Claim(JwtRegisteredClaimNames.Amr, a)));
         if (!string.IsNullOrWhiteSpace(user.FirstName))
             claims.Add(new Claim(JwtRegisteredClaimNames.GivenName, user.FirstName));
         if (!string.IsNullOrWhiteSpace(user.LastName))

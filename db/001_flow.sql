@@ -40,12 +40,19 @@
                             run one twice)
      flow.Usage             runs and emails per workspace per
                             month and per day (quotas, rate limit)
+     flow.TwoFactorChallenges
+                            tries per two-step sign-in
+                            challenge (five, then start again;
+                            spent once it signs someone in), as
+                            Orbit's db/057. The codes themselves
+                            are checked by Orbit and Projects.
 
    No FKs: rows are deleted by the API in dependency order.
 
    Order: deploy the API first, then run this. Until it has
    run every endpoint but sign-in answers 503 not_ready and the
-   worker waits, checking once a minute.
+   worker waits, checking once a minute (two-step tries are
+   counted in memory meanwhile).
 
    Azure-ready: no USE, no GO — run it as one batch connected
    to `vantraflow`. What depends on an earlier step (the schema,
@@ -254,6 +261,19 @@ IF OBJECT_ID(N'flow.Usage', N'U') IS NULL
         Emails      INT              NOT NULL CONSTRAINT DF_Usage_Emails DEFAULT 0,
         CONSTRAINT PK_Usage PRIMARY KEY (WorkspaceId, Period)
     );');
+
+IF OBJECT_ID(N'flow.TwoFactorChallenges', N'U') IS NULL
+    EXEC(N'CREATE TABLE flow.TwoFactorChallenges
+    (
+        ChallengeId UNIQUEIDENTIFIER NOT NULL,
+        Attempts    INT              NOT NULL,
+        ExpiresAt   DATETIME2(3)     NOT NULL,
+        CONSTRAINT PK_TwoFactorChallenges PRIMARY KEY (ChallengeId)
+    );');
+
+-- The prune of old two-step challenges.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_TwoFactorChallenges_ExpiresAt' AND object_id = OBJECT_ID(N'flow.TwoFactorChallenges'))
+    EXEC(N'CREATE INDEX IX_TwoFactorChallenges_ExpiresAt ON flow.TwoFactorChallenges (ExpiresAt);');
 
 -- A person's workspaces.
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorkspaceMembers_VantraId' AND object_id = OBJECT_ID(N'flow.WorkspaceMembers'))
