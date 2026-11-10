@@ -10,7 +10,7 @@ namespace VantraFlow.Api.Services.Connectors;
 /// Developer, where it can be revoked). After that, the same endpoints with that key (<c>X-Api-Key</c>), always in
 /// the key's workspace: projects for the pickers, projects and tasks for the actions, and a workspace webhook for
 /// the events — task.created, task.completed, project.created and client.created, signed with an HMAC of the
-/// body. Events Flow's key caused carry <c>via.apiKeyId</c>: the origin marker the loop protection reads.
+/// body. Tasks are found, updated (status, assignee, due date) and commented on through <c>tasks</c>. Events Flow's key caused carry <c>via.apiKeyId</c>: the origin marker the loop protection reads.
 /// </summary>
 public sealed class ProjectsApi(IHttpClientFactory http, IConfiguration config) : AppApi(http, config)
 {
@@ -91,9 +91,64 @@ public sealed class ProjectsApi(IHttpClientFactory http, IConfiguration config) 
                 var t = await SendAsync<JsonObject>(HttpMethod.Post, $"{P}/projects/{pid}/tasks", body, key, null, ct, idempotencyKey);
                 return Shape(t, $"{AppUrl}/projects/{pid}?task={Tokens.Text(t["id"])}");
             }
+            case "task.find":
+                return await FindTasksAsync(key, input, ct);
+            case "task.update":
+            {
+                var taskId = TaskId(input);
+                var body = new { status = Opt(input, "status"), assignee = Opt(input, "assignee"), dueDate = Opt(input, "dueDate") };
+                if (body.status is null && body.assignee is null && body.dueDate is null)
+                    throw new AppRefusedException(400, "Nothing to change: fill in the status, the assignee or the due date.", "empty");
+                return await SendAsync<JsonObject>(HttpMethod.Patch, $"{P}/tasks/{taskId}", body, key, null, ct, idempotencyKey);
+            }
+            case "task.comment":
+            {
+                var taskId = TaskId(input);
+                var text = Required(input, "body", "The comment");
+                var c = await SendAsync<JsonObject>(HttpMethod.Post, $"{P}/tasks/{taskId}/comments", new { body = text.Length > 10_000 ? text[..10_000] : text },
+                    key, null, ct, idempotencyKey);
+                return new JsonObject { ["id"] = c["id"]?.DeepClone(), ["taskId"] = taskId.ToString(), ["body"] = c["body"]?.DeepClone() ?? text };
+            }
             default:
                 throw new AppRefusedException(400, "Vantra Projects can't do that.", "unknown_action");
         }
+    }
+
+    private static Guid TaskId(JsonObject input) =>
+        Guid.TryParse(Required(input, "taskId", "The task"), out var id) ? id
+            : throw new AppRefusedException(400, "The task isn't a Vantra Projects task id.", "bad_task");
+
+    /// <summary>
+    /// "Find tasks": up to <c>limit</c> (1–100, default 25) tasks, open ones first, across projects or in one, matching a
+    /// name, a column, an assignee's email, open only, or due within <c>dueWithinDays</c>. Hands on
+    /// <c>{ count, first, tasks, names }</c>; <c>tasks</c> is the list a "Repeat for each" step goes through.
+    /// </summary>
+    private async Task<JsonNode> FindTasksAsync(string key, JsonObject input, CancellationToken ct)
+    {
+        var q = new List<string>();
+        void Add(string name, string? value) { if (!string.IsNullOrWhiteSpace(value)) q.Add($"{name}={Uri.EscapeDataString(value.Trim())}"); }
+        if (Opt(input, "projectId") is { } p)
+        {
+            if (!Guid.TryParse(p, out var pid)) throw new AppRefusedException(400, "The project isn't a Vantra Projects project id.", "bad_project");
+            Add("projectId", pid.ToString());
+        }
+        Add("q", Opt(input, "q"));
+        Add("status", Opt(input, "status"));
+        Add("assignee", Opt(input, "assignee"));
+        if (Opt(input, "open") is "true" or "yes" or "1") q.Add("open=true");
+        if (double.TryParse(Opt(input, "dueWithinDays"), NumberStyles.Float, CultureInfo.InvariantCulture, out var days) && days > 0)
+            q.Add("dueBefore=" + Uri.EscapeDataString(DateTime.UtcNow.Date.AddDays(Math.Min(days, 3650) + 1).ToString("yyyy-MM-dd")));
+        var limit = int.TryParse(Opt(input, "limit"), out var l) ? Math.Clamp(l, 1, 100) : 25;
+        q.Add($"limit={limit}");
+        var list = await SendAsync<JsonArray>(HttpMethod.Get, $"{P}/tasks?{string.Join("&", q)}", null, key, null, ct);
+        var tasks = new JsonArray(list.OfType<JsonObject>().Select(t => (JsonNode)t.DeepClone()).ToArray());
+        return new JsonObject
+        {
+            ["count"] = tasks.Count,
+            ["first"] = tasks.Count > 0 ? tasks[0]!.DeepClone() : null,
+            ["tasks"] = tasks,
+            ["names"] = string.Join(", ", tasks.OfType<JsonObject>().Select(t => Tokens.Text(t["name"]))),
+        };
     }
 
     private static JsonObject Shape(JsonObject o, string url)

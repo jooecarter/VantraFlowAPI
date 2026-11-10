@@ -11,13 +11,15 @@ namespace VantraFlow.Api.Controllers;
 /// GET    api/workspaces                         → yours (a first one is made on first visit)
 /// POST   api/workspaces                         { name, timeZone } → 201
 /// PATCH  api/w/{ws}                             { name, timeZone } (owner / admin)
+/// PUT    api/w/{ws}/alerts                      { on } the failure-alert default (owner / admin; db/002, 503 before)
 /// GET    api/w/{ws}/members
 /// POST   api/w/{ws}/members                     { email, role } (owner / admin; a Vantra account)
 /// PATCH  api/w/{ws}/members/{vantraId}          { role }
 /// DELETE api/w/{ws}/members/{vantraId}
 /// </code>
 /// </summary>
-public sealed class WorkspacesController(WorkspacesRepository workspaces, UsersRepository users, IConfiguration config) : FlowControllerBase(workspaces)
+public sealed class WorkspacesController(WorkspacesRepository workspaces, UsersRepository users, IConfiguration config, AlertsRepository alerts, FlowSchema schema)
+    : FlowControllerBase(workspaces)
 {
     [HttpGet("api/workspaces")]
     public async Task<ActionResult<IReadOnlyList<WorkspaceDto>>> List()
@@ -54,6 +56,18 @@ public sealed class WorkspacesController(WorkspacesRepository workspaces, UsersR
         var tz = body.TimeZone is null ? w.TimeZone : ValidZone(body.TimeZone) ?? "";
         if (tz.Length == 0) return BadRequest(new { error = "That isn't a time zone we know." });
         await Workspaces.UpdateAsync(workspaceId, name, tz);
+        return Ok(await DtoAsync((await Workspaces.GetAsync(workspaceId))!, role!));
+    }
+
+    /// <summary>The failure-alert default: email a flow's creator when it fails, for flows that don't choose for themselves.</summary>
+    [HttpPut("api/w/{workspaceId:guid}/alerts")]
+    public async Task<ActionResult<WorkspaceDto>> Alerts(Guid workspaceId, [FromBody] WorkspaceAlertsBody body)
+    {
+        var (role, refusal) = await ManageAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.AlertsReadyAsync())
+            return StatusCode(503, new { error = "Failure alerts arrive with the next server update.", code = "not_ready" });
+        await alerts.SetWorkspaceDefaultAsync(workspaceId, body.On);
         return Ok(await DtoAsync((await Workspaces.GetAsync(workspaceId))!, role!));
     }
 
@@ -108,7 +122,8 @@ public sealed class WorkspacesController(WorkspacesRepository workspaces, UsersR
     {
         var limits = FlowLimits.From(config);
         var (runs, emails) = await Workspaces.UsageAsync(w.Id, DateTime.UtcNow);
-        return new WorkspaceDto(w.Id, w.Name, w.TimeZone, role, w.MonthlyRunQuota ?? limits.MonthlyRuns, runs, emails, limits.EmailsPerDay);
+        bool? alertDefault = await schema.AlertsReadyAsync() ? await alerts.WorkspaceDefaultAsync(w.Id) : null;
+        return new WorkspaceDto(w.Id, w.Name, w.TimeZone, role, w.MonthlyRunQuota ?? limits.MonthlyRuns, runs, emails, limits.EmailsPerDay, alertDefault);
     }
 
     private static string? ValidZone(string? id)

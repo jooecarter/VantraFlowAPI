@@ -21,11 +21,12 @@ namespace VantraFlow.Api.Controllers;
 /// POST   api/w/{ws}/flows/{id}/sample             { definition } → { trigger, real } — data to test with
 /// POST   api/w/{ws}/flows/{id}/test               { definition, trigger? } → the test run, every step for real
 /// POST   api/w/{ws}/flows/{id}/test-step          { definition, stepId, data } → that step's log line
+/// PUT    api/w/{ws}/flows/{id}/alerts             { on: true | false | null } → the flow's failure alert (db/002; 503 before)
 /// </code>
 /// </summary>
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
-    FlowSecrets secrets, IConfiguration config) : FlowControllerBase(workspaces)
+    FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema) : FlowControllerBase(workspaces)
 {
     private FlowLimits Limits => FlowLimits.From(config);
 
@@ -165,7 +166,8 @@ public sealed class FlowsController(
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(TimeSpan.FromSeconds(60));
         IReadOnlyList<StepLog> logs;
-        try { logs = await new RunExecutor(actions, Limits).ExecuteAsync(state, budget.Token, maxSteps: Limits.MaxSteps + 5); }
+        // A loop comes round once per item (a test goes through the first few), so a test may take more goes than steps.
+        try { logs = await new RunExecutor(actions, Limits).ExecuteAsync(state, budget.Token, maxSteps: Limits.MaxSteps * (LoopRules.TestItems + 1) + 10); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             logs = [];
@@ -187,15 +189,29 @@ public sealed class FlowsController(
         var ws = (await Workspaces.GetAsync(workspaceId))!;
         var runId = FlowSecrets.NewRowId("tst_");
         var data = body.Data as JsonObject ?? RunState.NewData(FlowCatalog.Sample(def.Trigger, DateTime.UtcNow), runId, DateTime.UtcNow, ws.Name, ws.TimeZone, true);
-        // Just this step: a one-step flow over the data the earlier steps' tests left.
+        // Just this step: a one-step flow over the data the earlier steps' tests left. A step inside a Repeat for each
+        // runs for the list's first item; a Repeat for each runs its steps for the first few items.
         var single = new FlowDefinition { Trigger = def.Trigger, Steps = [Clone(step)], Options = def.Options };
         var state = new RunState
         {
             Id = runId, WorkspaceId = workspaceId, FlowId = id, Definition = single, Data = (JsonObject)data.DeepClone(),
             Position = Positions.First, Test = true, NotBefore = DateTime.UtcNow,
         };
-        var logs = await new RunExecutor(actions, Limits).ExecuteAsync(state, ct, maxSteps: 1);
-        var log = logs.FirstOrDefault();
+        if (state.Data["loop"] is null && LoopAround(def.Steps, step.Id) is { } loop
+            && LoopRules.ListOf(Tokens.RenderNode(loop.Config["items"], state.Data)) is { Count: > 0 } items)
+            state.Data["loop"] = new JsonObject { ["item"] = items[0]?.DeepClone(), ["index"] = 0, ["number"] = 1, ["count"] = Math.Min(items.Count, LoopRules.MaxOf(loop.Config)) };
+        var goes = step.Type == StepTypes.Loop ? ((step.Do?.Count ?? 0) * 3 + 2) * (LoopRules.TestItems + 1) : 1;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(60));
+        IReadOnlyList<StepLog> logs;
+        try { logs = await new RunExecutor(actions, Limits).ExecuteAsync(state, budget.Token, maxSteps: goes); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            logs = [];
+            state.Status = RunStatuses.Failed;
+            state.Error = "The test took longer than a minute.";
+        }
+        var log = logs.LastOrDefault(l => l.StepId == step.Id) ?? logs.FirstOrDefault();
         return Ok(new
         {
             status = log?.Status ?? state.Status,
@@ -206,7 +222,32 @@ public sealed class FlowsController(
         });
     }
 
+    /// <summary>
+    /// "Email me when this flow fails": on (the alert goes to the caller), off, or null (the workspace's default, which
+    /// emails the flow's creator). Any member may; turning it on makes it theirs.
+    /// </summary>
+    [HttpPut("api/w/{workspaceId:guid}/flows/{id}/alerts")]
+    public async Task<IActionResult> Alerts(Guid workspaceId, string id, [FromBody] FlowAlertsBody body)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.AlertsReadyAsync())
+            return StatusCode(503, new { error = "Failure alerts arrive with the next server update.", code = "not_ready" });
+        if (await flows.GetAsync(workspaceId, id) is null) return NoFlow();
+        await alerts.SetFlowAsync(workspaceId, id, body.On, Sub);
+        return Ok(await AlertsDtoAsync(workspaceId, id));
+    }
+
     // ── Helpers ──
+
+    private async Task<FlowAlertsDto?> AlertsDtoAsync(Guid workspaceId, string flowId)
+    {
+        if (!await schema.AlertsReadyAsync()) return null;
+        if (await alerts.SettingAsync(workspaceId, flowId) is not { } a) return null;
+        var to = a.To ?? a.CreatedBy;
+        var member = (await Workspaces.MembersAsync(workspaceId)).FirstOrDefault(m => m.VantraId == to);
+        return new FlowAlertsDto(a.On ?? a.WorkspaceDefault, a.On, a.WorkspaceDefault, member is null ? null : member.Name ?? member.Email, to == Sub);
+    }
 
     /// <summary>Sync the apps whose webhooks a change may affect (the trigger's app before and after).</summary>
     private async Task SyncAsync(Guid workspaceId, string before, string after, CancellationToken ct)
@@ -235,7 +276,7 @@ public sealed class FlowsController(
         var next = f.Enabled && def.Trigger.App == "schedule" ? ScheduleRules.Next(def.Trigger, tz, DateTime.UtcNow) : null;
         return new FlowDto(f.Id, f.Name, f.Description, f.Enabled, JsonSerializer.SerializeToNode(def, FlowDefinition.Json)!, f.Version,
             f.HookId is null ? null : $"{connections.ApiBase}/api/hooks/{f.HookId}", f.HookSecretCipher is not null, f.PausedReason, f.TemplateId,
-            Iso(next), Iso(f.UpdatedAt), Iso(f.LastRunAt), f.LastRunStatus);
+            Iso(next), Iso(f.UpdatedAt), Iso(f.LastRunAt), f.LastRunStatus, await AlertsDtoAsync(f.WorkspaceId, f.Id));
     }
 
     private static FlowSummaryDto Summary(FlowRow f, FlowStatsRow? s)
@@ -252,6 +293,18 @@ public sealed class FlowsController(
         if (node is not JsonObject) return null;
         try { return node.Deserialize<FlowDefinition>(FlowDefinition.Json); }
         catch (JsonException) { return null; }
+    }
+
+    /// <summary>The Repeat for each a step is inside, if any.</summary>
+    private static StepDef? LoopAround(IEnumerable<StepDef> steps, string stepId, StepDef? loop = null)
+    {
+        foreach (var s in steps)
+        {
+            if (s.Id == stepId) return loop;
+            foreach (var side in new[] { s.Then, s.Else, s.Do })
+                if (side is not null && LoopAround(side, stepId, s.Type == StepTypes.Loop && side == s.Do ? s : loop) is { } found) return found;
+        }
+        return null;
     }
 
     private static StepDef Clone(StepDef s) => JsonSerializer.Deserialize<StepDef>(JsonSerializer.Serialize(s, FlowDefinition.Json), FlowDefinition.Json)!;

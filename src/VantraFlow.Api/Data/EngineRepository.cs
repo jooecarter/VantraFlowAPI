@@ -203,18 +203,35 @@ WHERE WorkspaceId = @WorkspaceId AND Id = @Id AND Status IN (N'queued', N'waitin
             new { WorkspaceId = workspaceId, Id = runId, Now = now }) > 0;
     }
 
-    public async Task<IReadOnlyList<RunRow>> RunsAsync(Guid workspaceId, string? flowId, string? status, int take, DateTime? before)
+    /// <summary>
+    /// A workspace's runs, newest first: of one flow, in one status, started in [<paramref name="from"/>,
+    /// <paramref name="to"/>) and before the cursor <paramref name="before"/>, and matching <paramref name="q"/> — a
+    /// run's id (or the start of one) or any text in its trigger data (a record's name, an email, a webhook's value).
+    /// </summary>
+    public async Task<IReadOnlyList<RunRow>> RunsAsync(Guid workspaceId, string? flowId, string? status, int take, DateTime? before,
+        DateTime? from = null, DateTime? to = null, string? q = null)
     {
         using var conn = factory.Flow();
+        var term = string.IsNullOrWhiteSpace(q) ? null : Like(q.Trim());
         return (await conn.QueryAsync<RunRow>($@"
 SELECT TOP (@Take) {RunCols} FROM flow.Runs
 WHERE WorkspaceId = @WorkspaceId
   AND (@FlowId IS NULL OR FlowId = @FlowId)
   AND (@Status IS NULL OR Status = @Status)
   AND (@Before IS NULL OR StartedAt < @Before)
+  AND (@From IS NULL OR StartedAt >= @From)
+  AND (@To IS NULL OR StartedAt < @To)
+  AND (@Prefix IS NULL OR Id LIKE @Prefix ESCAPE N'\' OR TriggerData LIKE @Term ESCAPE N'\')
 ORDER BY StartedAt DESC;",
-            new { WorkspaceId = workspaceId, FlowId = flowId, Status = status, Take = take, Before = before })).ToList();
+            new
+            {
+                WorkspaceId = workspaceId, FlowId = flowId, Status = status, Take = take, Before = before, From = from, To = to,
+                Prefix = term is null ? null : term + "%", Term = term is null ? null : "%" + term + "%",
+            })).ToList();
     }
+
+    /// <summary>Text for LIKE: its wildcards and the escape character taken literally.</summary>
+    public static string Like(string s) => s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
 
     public async Task<RunRow?> RunAsync(Guid workspaceId, string id)
     {

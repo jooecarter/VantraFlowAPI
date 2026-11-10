@@ -9,8 +9,15 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace VantraFlow.Api.Services.Connectors;
 
-/// <summary>The app couldn't be reached, timed out, or answered 5xx / 429: worth trying again.</summary>
-public sealed class AppUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
+/// <summary>
+/// The app couldn't be reached, timed out, or answered 5xx / 429: worth trying again. <see cref="Status"/> is the
+/// HTTP status when there was an answer; <see cref="NotSetUp"/> when this server has no address or key for the app.
+/// </summary>
+public sealed class AppUnavailableException(string message, Exception? inner = null, int? status = null, bool notSetUp = false) : Exception(message, inner)
+{
+    public int? Status { get; } = status;
+    public bool NotSetUp { get; } = notSetUp;
+}
 
 /// <summary>The connection's key was revoked in the app (401): the connection is marked so, and nothing retries.</summary>
 public sealed class AppRevokedException(string app) : Exception($"The {app} connection was disconnected. Connect it again from Connections.");
@@ -83,7 +90,7 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
     /// </summary>
     public string Assertion(string vantraId, string? name, Guid flowWorkspaceId, bool passedSecondStep = false)
     {
-        var key = Key ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.");
+        var key = Key ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.", notSetUp: true);
         var claims = new List<Claim> { new("sub", vantraId), new("flow_ws", flowWorkspaceId.ToString()), new("jti", Guid.NewGuid().ToString()) };
         if (!string.IsNullOrWhiteSpace(name)) claims.Add(new Claim("name", name));
         if (passedSecondStep) claims.Add(new Claim("amr", SecondStepAmr));
@@ -126,7 +133,7 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
 
     protected async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? key, string? assertion, CancellationToken ct, string? idempotencyKey = null)
     {
-        var baseUrl = ApiUrl ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.");
+        var baseUrl = ApiUrl ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.", notSetUp: true);
         using var req = new HttpRequestMessage(method, new Uri(baseUrl, path));
         if (body is not null) req.Content = JsonContent.Create(body, options: Json);
         if (key is not null) Authenticate(req, key);
@@ -150,7 +157,7 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
             }
             var (message, code) = await ErrorAsync(res, timeout.Token);
             if ((int)res.StatusCode >= 500 || res.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout)
-                throw new AppUnavailableException(code == "not_ready" ? $"{AppName} isn't ready for Vantra Flow yet." : $"{AppName} is unavailable.");
+                throw new AppUnavailableException(code == "not_ready" ? $"{AppName} isn't ready for Vantra Flow yet." : $"{AppName} is unavailable.", status: (int)res.StatusCode);
             if (res.StatusCode == HttpStatusCode.Unauthorized && key is not null) throw new AppRevokedException(AppName);
             throw new AppRefusedException((int)res.StatusCode, message ?? $"{AppName} refused that.", code);
         }

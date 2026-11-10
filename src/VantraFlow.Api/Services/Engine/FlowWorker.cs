@@ -36,7 +36,8 @@ public sealed class FlowSignal
 /// them — or put them back with backoff, and 'dead' with the error after the last try.</item>
 /// <item><b>Runs</b>: claim due runs (new, past a delay, due a retry, or whose instance died), run their next
 /// steps (<see cref="RunExecutor"/>) and save the log.</item>
-/// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys).</item>
+/// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), and send the
+/// failure alerts that are due (<see cref="FailureAlerts"/>, db/002).</item>
 /// <item><b>Hourly</b>: prune old claims, dead events, and runs older than <c>Flow:KeepRunsDays</c>.</item>
 /// </list>
 /// Before db/001 it checks once a minute and does nothing else. Multi-instance safe; App Service needs
@@ -161,6 +162,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             nextMinute = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc).AddMinutes(1).AddSeconds(2);
             try { await ScheduleAsync(sp, now, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Schedule tick failed"); }
+            try { await sp.GetRequiredService<FailureAlerts>().SendDueAsync(now, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Failure alerts tick failed"); }
         }
 
         // 4. Housekeeping.

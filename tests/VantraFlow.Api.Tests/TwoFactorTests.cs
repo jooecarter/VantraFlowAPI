@@ -31,6 +31,7 @@ public sealed class TwoFactorTests
     {
         public readonly HashSet<string> On = [];
         public readonly HashSet<string> Down = [];
+        public readonly HashSet<string> Refusing = [];
         public readonly Dictionary<string, string> Codes = new() { ["orbit"] = Good, ["projects"] = "654321" };
         public string? OrbitBackup;
         public readonly List<(string App, string Code)> Asked = [];
@@ -38,12 +39,15 @@ public sealed class TwoFactorTests
         public IReadOnlyList<string> Apps => AppConnectors.Apps;
 
         public Task<bool> EnabledAsync(string app, string vantraId, CancellationToken ct) =>
-            Down.Contains(app) ? throw new AppUnavailableException("down") : Task.FromResult(On.Contains(app));
+            Down.Contains(app) ? throw new AppUnavailableException("down", status: 503)
+            : Refusing.Contains(app) ? throw new AppRefusedException(401, "Sign in to Vantra Flow again.", "assertion_mismatch")
+            : Task.FromResult(On.Contains(app));
 
         public Task<AppTwoFactorVerdict> VerifyAsync(string app, string vantraId, Guid challengeId, string code, CancellationToken ct)
         {
             Asked.Add((app, code));
             if (Down.Contains(app)) throw new AppUnavailableException("down");
+            if (Refusing.Contains(app)) throw new AppRefusedException(401, "no", "assertion_mismatch");
             if (!On.Contains(app)) return Task.FromResult(new AppTwoFactorVerdict(false, "not_enabled", "expired"));
             if (code == Codes[app]) return Task.FromResult(new AppTwoFactorVerdict(true, Kind: "totp"));
             if (app == "orbit" && code == OrbitBackup) return Task.FromResult(new AppTwoFactorVerdict(true, Kind: "backup", BackupCodesLeft: 9));
@@ -137,6 +141,34 @@ public sealed class TwoFactorTests
         var challenge = await signIn.GateAsync(Ada, "password", default);
         apps.Down.Add("orbit");
         Assert.Equal(TwoFactorFailure.Unavailable, (await signIn.CompleteAsync(challenge, Good, default)).Failure);
+    }
+
+    [Fact]
+    public async Task A_failure_names_the_app_and_whether_it_didnt_answer_or_refused()
+    {
+        var (signIn, apps, _) = Make("orbit");
+        apps.Down.Add("projects");
+        var down = await Assert.ThrowsAsync<TwoFactorUnavailableException>(() => signIn.GateAsync(Ada, "password", default));
+        Assert.Equal("projects", down.App);
+        Assert.Equal(503, down.Status);
+        Assert.Equal("two_factor_unavailable", down.Code);
+        Assert.StartsWith("Vantra Projects didn't answer", down.Message);
+
+        apps.Down.Clear();
+        apps.Refusing.Add("projects");
+        var refused = await Assert.ThrowsAsync<TwoFactorUnavailableException>(() => signIn.GateAsync(Ada, "password", default));
+        Assert.Equal("two_factor_mismatch", refused.Code);
+        Assert.Equal(401, refused.Status);
+        Assert.Equal("Vantra Projects and Vantra Flow aren't set up to connect yet.", refused.Message);
+
+        // The code step says the same.
+        apps.Refusing.Clear();
+        var challenge = await signIn.GateAsync(Ada, "password", default);
+        apps.Refusing.Add("orbit");
+        var done = await signIn.CompleteAsync(challenge, Good, default);
+        Assert.Equal(TwoFactorFailure.Unavailable, done.Failure);
+        Assert.Equal("two_factor_mismatch", done.Code);
+        Assert.Equal("Vantra Orbit and Vantra Flow aren't set up to connect yet.", done.Error);
     }
 
     [Fact]

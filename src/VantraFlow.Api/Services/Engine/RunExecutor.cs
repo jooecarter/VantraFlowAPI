@@ -95,6 +95,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
     {
         StepTypes.Delay => "Delay",
         StepTypes.Branch => "If / else",
+        StepTypes.Loop => "Repeat for each",
         _ => FlowCatalog.Action(s.App, s.Action)?.Title ?? "Step",
     };
 
@@ -123,6 +124,9 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
                 case StepTypes.Branch:
                     Branch(s, step, started, logs);
                     break;
+                case StepTypes.Loop:
+                    if (!Loop(s, step, started, logs)) return logs;
+                    break;
                 default:
                     if (!await ActionAsync(s, step, started, logs, ct)) return logs;
                     break;
@@ -137,7 +141,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
     /// <summary>False when the run now waits.</summary>
     private bool Delay(RunState s, StepDef step, DateTime started, List<StepLog> logs)
     {
-        var name = NameOf(step);
+        var name = NameIn(s, step);
         if (s.Steps[step.Id] is JsonObject prior && Utc(prior["until"]) is { } until)
         {
             if (started < until)
@@ -178,14 +182,14 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             ["right"] = r.Right is null ? null : Tokens.Render(r.Right, s.Data),
         }).ToArray());
         s.Steps[step.Id] = new JsonObject { ["result"] = result, ["path"] = result ? "then" : "else" };
-        logs.Add(Log(step, NameOf(step), "succeeded", 0, new JsonObject { ["match"] = cond?.Match ?? "all", ["rules"] = input }, s.Steps[step.Id], null, started, 0));
+        logs.Add(Log(step, NameIn(s, step), "succeeded", 0, new JsonObject { ["match"] = cond?.Match ?? "all", ["rules"] = input }, s.Steps[step.Id], null, started, 0));
         s.Position = Positions.Enter(s.Definition, s.Position!, result);
     }
 
     /// <summary>False when the run stops here (failed, or waiting to retry).</summary>
     private async Task<bool> ActionAsync(RunState s, StepDef step, DateTime started, List<StepLog> logs, CancellationToken ct)
     {
-        var name = NameOf(step);
+        var name = NameIn(s, step);
         var htmlKeys = step.App == "email" ? new HashSet<string> { "body" } : null;
         var input = Tokens.RenderNode(step.Config, s.Data, htmlKeys) as JsonObject ?? new JsonObject();
         var clock = Stopwatch.StartNew();
@@ -223,8 +227,150 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             return false;
         }
         logs.Add(Log(step, name, "failed", s.Attempt, input, null, outcome.Error, started, ms));
+        s.Attempt = 0;
+        if (ItemFailed(s, outcome.Error ?? "Failed.", started, logs)) return true;
         s.Status = RunStatuses.Failed;
         s.Error = $"{name}: {outcome.Error}";
+        return false;
+    }
+
+    // ── Repeat for each ──
+
+    /// <summary>A step's name in the log; inside a loop, with the item it ran for ("Create task · item 3").</summary>
+    private static string NameIn(RunState s, StepDef step)
+    {
+        var name = NameOf(step);
+        return Positions.LoopOf(s.Position) is not null && s.Data["loop"] is JsonObject l && l["number"] is JsonValue n
+            ? $"{name} · item {Tokens.Text(n)}" : name;
+    }
+
+    private static int Int(JsonNode? n) => n is JsonValue v && v.TryGetValue<int>(out var i) ? i : 0;
+
+    private static bool Running(JsonNode? state) => state is JsonObject o && o["running"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
+    /// <summary>
+    /// A loop step: the first time, it reads the list (at most <see cref="LoopRules.MaxOf"/> items; a test, the first
+    /// <see cref="LoopRules.TestItems"/>) and starts the first item; each time its steps come back round, it notes how
+    /// that item went and starts the next, until the last, when it logs every item's result and the run goes on.
+    /// While it runs, <c>loop</c> in the run's data is the current item: <c>{ item, index, number, count }</c>.
+    /// False when the run stops here (the list isn't a list).
+    /// </summary>
+    private bool Loop(RunState s, StepDef step, DateTime started, List<StepLog> logs)
+    {
+        var path = s.Position!;
+        if (s.Steps[step.Id] is JsonObject st && Running(st))
+        {
+            var items = st["items"] as JsonArray ?? [];
+            var index = Int(st["index"]);
+            var error = st["itemError"] is JsonValue ev && ev.TryGetValue<string>(out var e) ? e : null;
+            st.Remove("itemError");
+            Note(st, index, error);
+            if (index + 1 < items.Count)
+            {
+                StartItem(s, st, index + 1);
+                s.Position = Positions.EnterLoop(s.Definition, path);
+                return true;
+            }
+            Finish(s, step, st, started, logs, failedRun: false);
+            s.Position = Positions.After(s.Definition, path);
+            return true;
+        }
+
+        var input = Tokens.RenderNode(step.Config, s.Data) as JsonObject ?? new JsonObject();
+        var list = LoopRules.ListOf(input["items"]);
+        if (list is null)
+        {
+            var why = "The list to go through isn't a list.";
+            logs.Add(Log(step, NameOf(step), "failed", 0, input, null, why, started, 0));
+            s.Status = RunStatuses.Failed;
+            s.Error = $"{NameOf(step)}: {why}";
+            return false;
+        }
+        var max = Math.Min(LoopRules.MaxOf(step.Config), s.Test ? LoopRules.TestItems : LoopRules.MaxItems);
+        var take = new JsonArray(list.Take(max).Select(x => x?.DeepClone()).ToArray());
+        var state = new JsonObject
+        {
+            ["running"] = true, ["items"] = take, ["total"] = list.Count, ["index"] = 0, ["results"] = new JsonArray(),
+        };
+        s.Steps[step.Id] = state;
+        if (take.Count == 0 || step.Do is not { Count: > 0 })
+        {
+            Finish(s, step, state, started, logs, failedRun: false);
+            s.Position = Positions.After(s.Definition, path);
+            return true;
+        }
+        StartItem(s, state, 0);
+        s.Position = Positions.EnterLoop(s.Definition, path);
+        return true;
+    }
+
+    private static void StartItem(RunState s, JsonObject state, int index)
+    {
+        var items = state["items"] as JsonArray ?? [];
+        state["index"] = index;
+        s.Data["loop"] = new JsonObject
+        {
+            ["item"] = items[index]?.DeepClone(), ["index"] = index, ["number"] = index + 1, ["count"] = items.Count,
+        };
+    }
+
+    /// <summary>How the item at <paramref name="index"/> went, in the loop's results.</summary>
+    private static void Note(JsonObject state, int index, string? error)
+    {
+        var items = state["items"] as JsonArray ?? [];
+        var results = state["results"] as JsonArray ?? (JsonArray)(state["results"] = new JsonArray());
+        var r = new JsonObject
+        {
+            ["number"] = index + 1,
+            ["label"] = index < items.Count ? LoopRules.Label(items[index]) : "",
+            ["status"] = error is null ? "succeeded" : "failed",
+        };
+        if (error is not null) r["error"] = error.Length > 300 ? error[..300] : error;
+        results.Add(r);
+    }
+
+    /// <summary>The loop's log line and output: how many items, how many failed, and each item's result.</summary>
+    private void Finish(RunState s, StepDef step, JsonObject state, DateTime started, List<StepLog> logs, bool failedRun)
+    {
+        var results = state["results"] as JsonArray ?? [];
+        var count = (state["items"] as JsonArray)?.Count ?? 0;
+        var total = Int(state["total"]);
+        var failed = results.Count(r => Tokens.Text(r?["status"]) == "failed");
+        var output = new JsonObject
+        {
+            ["count"] = count,
+            ["succeeded"] = results.Count - failed,
+            ["failed"] = failed,
+            ["total"] = total,
+            ["results"] = results.DeepClone(),
+        };
+        s.Steps[step.Id] = output;
+        s.Data.Remove("loop");
+        var note = total > count
+            ? s.Test && count == LoopRules.TestItems ? $"A test goes through the first {count} of {total} items." : $"Only the first {count} of {total} items."
+            : null;
+        if (!failedRun && failed > 0) note = $"{failed} of {count} items failed." + (note is null ? "" : " " + note);
+        var input = new JsonObject { ["items"] = total, ["max"] = LoopRules.MaxOf(step.Config), ["onError"] = LoopRules.Continues(step.Config) ? "continue" : "stop" };
+        logs.Add(Log(step, NameOf(step), failedRun ? "failed" : "succeeded", 0, input, output, note, started, 0));
+    }
+
+    /// <summary>
+    /// A step inside a loop failed for good. "Continue": the item is marked failed and the loop goes on to the next
+    /// (true). "Stop" (the default): the loop logs its results so far and the run fails (false).
+    /// </summary>
+    private bool ItemFailed(RunState s, string error, DateTime started, List<StepLog> logs)
+    {
+        if (Positions.LoopOf(s.Position) is not { } loopPath || Positions.StepAt(s.Definition, loopPath) is not { Type: StepTypes.Loop } loop
+            || s.Steps[loop.Id] is not JsonObject state || !Running(state))
+            return false;
+        if (LoopRules.Continues(loop.Config))
+        {
+            state["itemError"] = error;
+            s.Position = loopPath;
+            return true;
+        }
+        Note(state, Int(state["index"]), error);
+        Finish(s, loop, state, started, logs, failedRun: true);
         return false;
     }
 
