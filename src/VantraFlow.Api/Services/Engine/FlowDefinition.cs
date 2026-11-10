@@ -139,7 +139,7 @@ public static partial class DefinitionRules
         var errors = new List<DefinitionError>();
         var trigger = FlowCatalog.Trigger(def.Trigger.App, def.Trigger.Event);
         if (trigger is null) errors.Add(new(null, "Choose a trigger."));
-        else
+        else if (def.Trigger.App != "schedule") // a schedule's own rules say what's missing, once
             foreach (var key in trigger.Required)
                 if (Empty(def.Trigger.Config[key])) errors.Add(new(null, $"The trigger needs {trigger.Label(key)}."));
         if (trigger is not null && def.Trigger.App == "schedule") errors.AddRange(ScheduleRules.Validate(def.Trigger));
