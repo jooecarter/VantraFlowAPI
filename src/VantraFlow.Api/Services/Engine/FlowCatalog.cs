@@ -36,6 +36,7 @@ public static class FlowCatalog
     [
         E("orbit", "record.create", "Create record", ("tableId", "a table"), ("fields", "at least one field")),
         E("orbit", "record.update", "Update record", ("tableId", "a table"), ("recordId", "the record"), ("fields", "at least one field")),
+        E("orbit", "record.find", "Find records", ("tableId", "a table")),
         E("projects", "project.create", "Create project", ("name", "the project's name")),
         E("projects", "task.create", "Create task", ("projectId", "the project"), ("name", "the task's name")),
         E("email", "send", "Send email", ("to", "who it goes to"), ("subject", "a subject")),

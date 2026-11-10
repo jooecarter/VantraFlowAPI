@@ -77,6 +77,7 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
 
     public override async Task<JsonNode?> ActAsync(string key, string action, JsonObject input, string idempotencyKey, CancellationToken ct)
     {
+        if (action == "record.find") return await FindAsync(key, input, ct);
         var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
         var fields = Fields(input["fields"]);
         if (fields.Count == 0) throw new AppRefusedException(400, "None of the fields have a value.", "empty");
@@ -90,6 +91,43 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
             default:
                 throw new AppRefusedException(400, "Vantra Orbit can't do that.", "unknown_action");
         }
+    }
+
+    /// <summary>
+    /// "Find records": up to <c>limit</c> (1–50, default 10) newest-first records of a table, optionally where one
+    /// field equals a value (Orbit's <c>filter[field]=value</c>) and / or changed in the last <c>updatedWithinHours</c>.
+    /// Hands on <c>{ count, first, records, names }</c> — names: the primary field of each, joined.
+    /// </summary>
+    private async Task<JsonNode> FindAsync(string key, JsonObject input, CancellationToken ct)
+    {
+        var tableId = Required(input, "tableId", "The table");
+        var t = Uri.EscapeDataString(tableId);
+        var limit = int.TryParse(Tokens.Text(input["limit"]), out var l) ? Math.Clamp(l, 1, 50) : 10;
+        var q = new List<string> { $"limit={limit}", "sort=updatedAt", "order=desc" };
+        var field = Tokens.Text(input["matchField"]).Trim();
+        var value = Tokens.Text(input["matchValue"]).Trim();
+        if (field.Length > 0 && value.Length > 0) q.Add($"{Uri.EscapeDataString($"filter[{field}]")}={Uri.EscapeDataString(value)}");
+        if (double.TryParse(Tokens.Text(input["updatedWithinHours"]), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hours) && hours > 0)
+            q.Add("updatedSince=" + Uri.EscapeDataString(DateTime.UtcNow.AddHours(-Math.Min(hours, 24 * 90)).ToString("yyyy-MM-ddTHH:mm:ssZ")));
+        var table = await SendAsync<JsonObject>(HttpMethod.Get, $"/api/v1/tables/{t}", null, key, null, ct);
+        var page = await SendAsync<JsonObject>(HttpMethod.Get, $"/api/v1/tables/{t}/records?{string.Join("&", q)}", null, key, null, ct);
+        var records = new JsonArray();
+        var names = new List<string>();
+        var primary = Tokens.Text(table["primaryFieldId"]);
+        var primaryName = (table["fields"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(f => Tokens.Text(f["id"]) == primary)?["name"];
+        foreach (var r in (page["data"] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            var rec = Record(r);
+            records.Add(rec);
+            if (primaryName is not null && Tokens.Resolve(rec, "fields." + Tokens.Text(primaryName)) is { } n) names.Add(Tokens.Text(n));
+        }
+        return new JsonObject
+        {
+            ["count"] = records.Count,
+            ["first"] = records.Count > 0 ? records[0]!.DeepClone() : null,
+            ["records"] = records,
+            ["names"] = string.Join(", ", names),
+        };
     }
 
     /// <summary>The field values to write: by name or id, empty ones left out (an empty token doesn't clear a field).</summary>
