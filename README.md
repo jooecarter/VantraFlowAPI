@@ -10,6 +10,7 @@ ASP.NET Core (.NET 10), Dapper, Azure SQL. It is laid out like VantraOrbitAPI:
 src/VantraFlow.Api        the API
 tests/VantraFlow.Api.Tests xunit (no database needed)
 db/001_flow.sql           the schema: one idempotent, Azure-ready batch
+db/002_failure_alerts.sql failure alerts: the per-flow setting and the workspace default
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -51,6 +52,9 @@ bash scripts/sqlcheck.sh
   - step outputs that later steps use as tokens (`{{steps.s1.id}}`);
   - delays;
   - if / else branches;
+  - "Repeat for each": the steps inside run once per item of a list from the trigger or an earlier step
+    (`{{loop.item…}}`), at most 100 items (a test: the first 3), stopping or carrying on when an item fails, with
+    each item's result in the run log;
   - retries with backoff;
   - a run log with each step's input, output, error and duration;
   - Replay.
@@ -73,8 +77,14 @@ bash scripts/sqlcheck.sh
   optional HMAC secret. With a secret, callers send `X-Flow-Signature: sha256=hex(HMAC(secret, "{X-Flow-Timestamp}.{body}"))`
   and the timestamp must be within five minutes.
 
+- **Failure alerts.** "Email me when this flow fails" on a flow, and a workspace default (email a flow's creator)
+  for flows that don't choose. At most one email per flow per hour: the first failure at once, the rest of the
+  hour's in one digest, with a link to the newest failed run (`App:BaseUrl`). Within the daily email cap.
+- **Actions.** Orbit: create, update and find records, and add a comment to a record. Projects: create projects
+  and tasks, find tasks, update a task (status, assignee, due date) and add a comment.
+
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
-waits.
+waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.
 
 ## Settings
 
@@ -98,4 +108,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql` by hand against the `vantraflow` database, connected to it, as one batch.
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, by hand against the `vantraflow` database, connected to it, each
+as one batch.

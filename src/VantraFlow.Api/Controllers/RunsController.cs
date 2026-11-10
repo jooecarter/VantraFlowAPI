@@ -10,7 +10,8 @@ namespace VantraFlow.Api.Controllers;
 /// <summary>
 /// The run log.
 /// <code>
-/// GET  api/w/{ws}/runs?flowId=&amp;status=&amp;before=&amp;limit=   → newest first
+/// GET  api/w/{ws}/runs?flowId=&amp;status=&amp;from=&amp;to=&amp;q=&amp;before=&amp;limit=
+///                                                       → newest first; q: a run id or text in the trigger data
 /// GET  api/w/{ws}/runs/{id}                             → the run, its trigger data, and each step's input, output, error and duration
 /// POST api/w/{ws}/runs/{id}/replay                      → a new run of the flow as it is now, from the same trigger data
 /// POST api/w/{ws}/runs/{id}/cancel                      → a queued or waiting run stops
@@ -20,12 +21,14 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     : FlowControllerBase(workspaces)
 {
     [HttpGet("api/w/{workspaceId:guid}/runs")]
-    public async Task<ActionResult<IReadOnlyList<RunSummaryDto>>> List(Guid workspaceId, string? flowId, string? status, DateTime? before, int limit = 50)
+    public async Task<ActionResult<IReadOnlyList<RunSummaryDto>>> List(Guid workspaceId, string? flowId, string? status, DateTime? before,
+        DateTime? from = null, DateTime? to = null, string? q = null, int limit = 50)
     {
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
+        var term = q?.Trim() is { Length: > 0 } t ? (t.Length > 200 ? t[..200] : t) : null;
         var rows = await engine.RunsAsync(workspaceId, string.IsNullOrWhiteSpace(flowId) ? null : flowId, string.IsNullOrWhiteSpace(status) ? null : status,
-            Math.Clamp(limit, 1, 200), before?.ToUniversalTime());
+            Math.Clamp(limit, 1, 200), before?.ToUniversalTime(), from?.ToUniversalTime(), to?.ToUniversalTime(), term);
         return Ok(rows.Select(Summary).ToList());
     }
 

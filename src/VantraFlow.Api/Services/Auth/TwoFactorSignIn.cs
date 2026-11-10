@@ -32,7 +32,7 @@ public sealed class AppTwoFactorApps(AppConnectors apps) : ITwoFactorApps
     public Task<bool> EnabledAsync(string app, string vantraId, CancellationToken ct)
     {
         var api = Api(app);
-        if (!api.Configured) throw new AppUnavailableException($"{api.AppName} isn't set up on this server.");
+        if (!api.Configured) throw new AppUnavailableException($"{api.AppName} isn't set up on this server.", notSetUp: true);
         return api.TwoFactorEnabledAsync(api.Assertion(vantraId, null, Guid.Empty), ct);
     }
 
@@ -43,15 +43,55 @@ public sealed class AppTwoFactorApps(AppConnectors apps) : ITwoFactorApps
     }
 }
 
-/// <summary>Two-step sign-in couldn't be checked (an app didn't answer): the sign-in stops, it never goes ahead without.</summary>
-public sealed class TwoFactorUnavailableException(Exception? inner = null)
-    : Exception("We couldn't check your two-step sign-in. Try again in a moment.", inner);
+/// <summary>Why an app couldn't check two-step sign-in: it didn't answer, or it refused Flow's assertion (a setup problem).</summary>
+public enum TwoFactorAppProblem { Unreachable, Mismatch }
+
+/// <summary>
+/// Two-step sign-in couldn't be checked: the sign-in stops, it never goes ahead without. Names the app and why, so the
+/// sign-in page can say it as it is — "Vantra Projects didn't answer" (unreachable, a timeout or a 5xx:
+/// <c>two_factor_unavailable</c>), or "Vantra Projects and Vantra Flow aren't set up to connect yet" (the app refused
+/// the assertion with a 4xx, or this server has no address or key for it: <c>two_factor_mismatch</c>).
+/// </summary>
+public sealed class TwoFactorUnavailableException : Exception
+{
+    public const string GenericMessage = "We couldn't check your two-step sign-in. Try again in a moment.";
+
+    public string? App { get; }
+    public TwoFactorAppProblem Problem { get; }
+    public int? Status { get; }
+    public string Code => Problem == TwoFactorAppProblem.Mismatch ? "two_factor_mismatch" : "two_factor_unavailable";
+
+    public TwoFactorUnavailableException(Exception? inner = null) : base(GenericMessage, inner) { }
+
+    private TwoFactorUnavailableException(string app, TwoFactorAppProblem problem, int? status, Exception inner)
+        : base(MessageFor(app, problem), inner)
+    {
+        App = app;
+        Problem = problem;
+        Status = status;
+    }
+
+    /// <summary>What an app's failure means for the sign-in.</summary>
+    public static TwoFactorUnavailableException From(string app, Exception e) => e switch
+    {
+        AppRefusedException r => new(app, TwoFactorAppProblem.Mismatch, r.Status, e),
+        AppUnavailableException { NotSetUp: true } u => new(app, TwoFactorAppProblem.Mismatch, u.Status, e),
+        AppUnavailableException u => new(app, TwoFactorAppProblem.Unreachable, u.Status, e),
+        _ => new(app, TwoFactorAppProblem.Unreachable, null, e),
+    };
+
+    public static string NameOf(string app) => app switch { "orbit" => "Vantra Orbit", "projects" => "Vantra Projects", _ => app };
+
+    public static string MessageFor(string app, TwoFactorAppProblem problem) => problem == TwoFactorAppProblem.Mismatch
+        ? $"{NameOf(app)} and Vantra Flow aren't set up to connect yet."
+        : $"{NameOf(app)} didn't answer. Try again in a moment.";
+}
 
 public enum TwoFactorFailure { None, Expired, TooManyAttempts, WrongCode, Unavailable }
 
 /// <summary>The code step's outcome: the account to sign in, or why not (in the app's words when it said).</summary>
 public sealed record TwoFactorCompletion(TwoFactorFailure Failure, string? Error, string? VantraId, string? Method,
-    string? Kind = null, int? BackupCodesLeft = null)
+    string? Kind = null, int? BackupCodesLeft = null, string? Code = null)
 {
     public bool Ok => Failure == TwoFactorFailure.None && VantraId is not null;
 }
@@ -83,16 +123,24 @@ public sealed class TwoFactorSignIn(ITwoFactorApps apps, ITwoFactorGuards guards
     /// <summary>The apps that have the person's two-step sign-in on (none: sign in now). Throws <see cref="TwoFactorUnavailableException"/>.</summary>
     public async Task<IReadOnlyList<string>> EnabledInAsync(string vantraId, CancellationToken ct)
     {
-        try
+        var answers = await Task.WhenAll(apps.Apps.Select(async a =>
         {
-            var answers = await Task.WhenAll(apps.Apps.Select(async a => (App: a, On: await apps.EnabledAsync(a, vantraId, ct))));
-            return answers.Where(x => x.On).Select(x => x.App).ToList();
-        }
-        catch (Exception e) when (e is AppUnavailableException or AppRefusedException)
-        {
-            log.LogWarning("Two-step sign-in couldn't be checked: {Reason}", e.Message);
-            throw new TwoFactorUnavailableException(e);
-        }
+            try { return (App: a, On: await apps.EnabledAsync(a, vantraId, ct), Failure: (TwoFactorUnavailableException?)null); }
+            catch (Exception e) when (e is AppUnavailableException or AppRefusedException)
+            {
+                return (App: a, On: false, Failure: Logged(TwoFactorUnavailableException.From(a, e), "Two-step sign-in couldn't be checked"));
+            }
+        }));
+        // Fail closed: one app that can't say means no answer at all.
+        if (answers.FirstOrDefault(x => x.Failure is not null).Failure is { } failure) throw failure;
+        return answers.Where(x => x.On).Select(x => x.App).ToList();
+    }
+
+    /// <summary>Logs the app, the kind of failure and the HTTP status (never a token or an assertion).</summary>
+    private TwoFactorUnavailableException Logged(TwoFactorUnavailableException e, string what)
+    {
+        log.LogWarning("{What}: {App} {Problem} (HTTP {Status})", what, e.App, e.Problem, e.Status?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none");
+        return e;
     }
 
     /// <summary>After the first step: null (sign in now) or a challenge to finish with a code.</summary>
@@ -119,7 +167,7 @@ public sealed class TwoFactorSignIn(ITwoFactorApps apps, ITwoFactorGuards guards
         var totp = digits.Length == 6 && digits.All(char.IsAsciiDigit);
 
         var verdicts = new List<(string App, AppTwoFactorVerdict V)>();
-        var unavailable = false;
+        TwoFactorUnavailableException? unavailable = null;
         foreach (var app in challenge.Apps.Where(a => apps.Apps.Contains(a)))
         {
             if (!totp && app != "orbit") continue;      // backup codes are Orbit's alone
@@ -135,13 +183,12 @@ public sealed class TwoFactorSignIn(ITwoFactorApps apps, ITwoFactorGuards guards
             }
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException)
             {
-                log.LogWarning("A two-step code couldn't be checked: {Reason}", e.Message);
-                unavailable = true;
+                unavailable ??= Logged(TwoFactorUnavailableException.From(app, e), "A two-step code couldn't be checked");
             }
         }
 
         if (verdicts.Any(x => x.V.Code == "too_many_attempts")) return Fail(TwoFactorFailure.TooManyAttempts, TooManyMessage);
-        if (unavailable) return Fail(TwoFactorFailure.Unavailable, new TwoFactorUnavailableException().Message);
+        if (unavailable is not null) return Fail(TwoFactorFailure.Unavailable, unavailable.Message) with { Code = unavailable.Code };
         // Turned off (or the challenge used) everywhere it was on: start again.
         if (verdicts.Count > 0 && verdicts.All(x => x.V.Code is "not_enabled" or "challenge_expired")) return Fail(TwoFactorFailure.Expired, ExpiredMessage);
         // Orbit's own words when it said why (a code used twice, a backup code); otherwise Flow's.

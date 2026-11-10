@@ -33,7 +33,7 @@ public sealed class FlowDefinition
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
 
-    /// <summary>Every step, depth first in the order they run (a branch, then its "then" side, then its "else").</summary>
+    /// <summary>Every step, depth first in the order they run (a branch, then its "then" side, then its "else"; a loop, then the steps it repeats).</summary>
     public IEnumerable<StepDef> AllSteps() => Walk(Steps);
 
     private static IEnumerable<StepDef> Walk(IEnumerable<StepDef> steps)
@@ -43,6 +43,7 @@ public sealed class FlowDefinition
             yield return s;
             if (s.Then is not null) foreach (var t in Walk(s.Then)) yield return t;
             if (s.Else is not null) foreach (var e in Walk(s.Else)) yield return e;
+            if (s.Do is not null) foreach (var d in Walk(s.Do)) yield return d;
         }
     }
 }
@@ -59,7 +60,7 @@ public sealed class TriggerDef
 public sealed class StepDef
 {
     public string Id { get; set; } = "";
-    /// <summary><c>action</c>, <c>delay</c> or <c>branch</c>.</summary>
+    /// <summary><c>action</c>, <c>delay</c>, <c>branch</c> or <c>loop</c> ("Repeat for each").</summary>
     public string Type { get; set; } = StepTypes.Action;
     public string? App { get; set; }
     public string? Action { get; set; }
@@ -67,6 +68,8 @@ public sealed class StepDef
     public JsonObject Config { get; set; } = new();
     public List<StepDef>? Then { get; set; }
     public List<StepDef>? Else { get; set; }
+    /// <summary>A loop's steps, run once for each item (<see cref="LoopRules"/>).</summary>
+    public List<StepDef>? Do { get; set; }
     public RetryDef? Retry { get; set; }
 }
 
@@ -92,6 +95,61 @@ public static class StepTypes
     public const string Action = "action";
     public const string Delay = "delay";
     public const string Branch = "branch";
+    public const string Loop = "loop";
+}
+
+/// <summary>
+/// "Repeat for each": a loop step's config is <c>{ items, max, onError }</c>. <c>items</c> is a token for a list from the
+/// trigger or an earlier step (<c>{{steps.s1.records}}</c>, <c>{{trigger.body.items}}</c>); the steps in <c>do</c> run
+/// once per item, top to bottom, and read the item as <c>{{loop.item…}}</c> (with <c>{{loop.number}}</c> and
+/// <c>{{loop.count}}</c>). At most <c>max</c> items (1–<see cref="MaxItems"/>, default <see cref="MaxItems"/>); a test
+/// goes through the first <see cref="TestItems"/>. <c>onError</c>: <c>stop</c> (the default: the run fails with the
+/// item) or <c>continue</c> (the item is marked failed and the next one starts). Loops don't nest.
+/// </summary>
+public static class LoopRules
+{
+    public const int MaxItems = 100;
+    public const int TestItems = 3;
+
+    public static int MaxOf(JsonObject config)
+    {
+        var n = config["max"] is JsonValue v
+            && double.TryParse(Tokens.Text(v), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : MaxItems;
+        return (int)Math.Clamp(Math.Floor(n), 1, MaxItems);
+    }
+
+    public static bool Continues(JsonObject config) => Tokens.Text(config["onError"]) == "continue";
+
+    /// <summary>
+    /// The list a loop goes through: a list as it is; an object's first list among <c>items</c>, <c>records</c>,
+    /// <c>tasks</c>, <c>results</c>, <c>data</c> (so a step's whole output works too); text that is a JSON list. Null
+    /// for anything else.
+    /// </summary>
+    public static JsonArray? ListOf(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonArray a: return a;
+            case JsonObject o:
+                foreach (var key in new[] { "items", "records", "tasks", "results", "data" })
+                    if (Tokens.Resolve(o, key) is JsonArray inner) return inner;
+                return null;
+            case JsonValue v when v.TryGetValue<string>(out var s) && s.TrimStart().StartsWith('['):
+                try { return JsonNode.Parse(s) as JsonArray; }
+                catch (System.Text.Json.JsonException) { return null; }
+            default: return null;
+        }
+    }
+
+    /// <summary>A short name for an item in the run log: its name or title, else its id, else its text.</summary>
+    public static string Label(JsonNode? item)
+    {
+        string? Pick(JsonObject o) =>
+            new[] { "name", "title", "fields.Name", "email", "id" }.Select(k => Tokens.Resolve(o, k)).Where(n => n is JsonValue)
+                .Select(n => Tokens.Text(n)).FirstOrDefault(t => t.Length > 0);
+        var text = item is JsonObject o ? Pick(o) ?? "" : Tokens.Text(item);
+        return text.Length <= 80 ? text : text[..80] + "…";
+    }
 }
 
 /// <summary>A problem with a definition, for the studio to show next to the step (or the trigger: StepId null).</summary>
@@ -151,11 +209,11 @@ public static partial class DefinitionRules
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var earlier = new List<string>();
-        CheckList(def.Steps, 1, errors, seen, earlier, limits);
+        CheckList(def.Steps, 1, errors, seen, earlier, limits, false);
         return errors;
     }
 
-    private static void CheckList(List<StepDef> steps, int depth, List<DefinitionError> errors, HashSet<string> seen, List<string> earlier, FlowLimits limits)
+    private static void CheckList(List<StepDef> steps, int depth, List<DefinitionError> errors, HashSet<string> seen, List<string> earlier, FlowLimits limits, bool inLoop)
     {
         foreach (var s in steps)
         {
@@ -168,6 +226,8 @@ public static partial class DefinitionRules
                     var id = token.Split('.')[1];
                     if (!earlier.Contains(id)) errors.Add(new(s.Id, $"{{{{{token}}}}} isn't from an earlier step."));
                 }
+                else if ((token == "loop" || token.StartsWith("loop.", StringComparison.Ordinal)) && (!inLoop || s.Type == StepTypes.Loop))
+                    errors.Add(new(s.Id, $"{{{{{token}}}}} is only there inside a Repeat for each."));
 
             switch (s.Type)
             {
@@ -188,13 +248,25 @@ public static partial class DefinitionRules
                     if (Conditions.Parse(s.Config["condition"]) is not { Rules.Count: > 0 }) errors.Add(new(s.Id, "Add a condition."));
                     earlier.Add(s.Id);
                     var before = earlier.Count;
-                    CheckList(s.Then ??= [], depth + 1, errors, seen, earlier, limits);
+                    CheckList(s.Then ??= [], depth + 1, errors, seen, earlier, limits, inLoop);
                     // The else side can't see the then side's outputs.
                     var thenIds = earlier.Skip(before).ToList();
                     earlier.RemoveRange(before, earlier.Count - before);
-                    CheckList(s.Else ??= [], depth + 1, errors, seen, earlier, limits);
+                    CheckList(s.Else ??= [], depth + 1, errors, seen, earlier, limits, inLoop);
                     // After the branch, either side's outputs may be there (or empty): allow both.
                     earlier.AddRange(thenIds);
+                    continue;
+                case StepTypes.Loop:
+                    if (inLoop) errors.Add(new(s.Id, "A Repeat for each can't be inside another."));
+                    else if (depth >= limits.MaxDepth) errors.Add(new(s.Id, $"Branches and loops can be nested {limits.MaxDepth - 1} deep at most."));
+                    if (Empty(s.Config["items"])) errors.Add(new(s.Id, "Choose the list to go through."));
+                    if (s.Config["max"] is { } max && !Empty(max)
+                        && !(double.TryParse(Tokens.Text(max), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var given)
+                             && given >= 1 && given <= LoopRules.MaxItems))
+                        errors.Add(new(s.Id, $"Go through 1 to {LoopRules.MaxItems} items."));
+                    if (s.Do is not { Count: > 0 }) errors.Add(new(s.Id, "Add a step to repeat."));
+                    earlier.Add(s.Id);
+                    CheckList(s.Do ??= [], depth + 1, errors, seen, earlier, limits, true);
                     continue;
                 default:
                     errors.Add(new(s.Id, "Unknown step."));

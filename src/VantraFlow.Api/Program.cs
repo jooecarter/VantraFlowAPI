@@ -44,6 +44,8 @@ builder.Services.AddScoped<WorkspacesRepository>();
 builder.Services.AddScoped<FlowsRepository>();
 builder.Services.AddScoped<ConnectionsRepository>();
 builder.Services.AddScoped<EngineRepository>();
+builder.Services.AddScoped<AlertsRepository>();
+builder.Services.AddScoped<FailureAlerts>();
 
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();

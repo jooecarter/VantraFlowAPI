@@ -19,7 +19,8 @@ namespace VantraFlow.Api.Controllers;
 /// Two-step sign-in, as Orbit's: when the person has it on in Vantra Orbit or Vantra Projects, a password, Google or
 /// Microsoft sign-in answers <c>{ twoFactorRequired, challenge }</c> instead of a session, and <c>POST api/auth/2fa</c>
 /// takes that challenge and a code (<see cref="TwoFactorSignIn"/>). The session then carries <c>amr: otp</c>.
-/// If the apps can't be asked, the sign-in stops (503 <c>two_factor_unavailable</c>); it never goes ahead without.
+/// If the apps can't be asked, the sign-in stops (503 <c>two_factor_unavailable</c>: "Vantra Projects didn't answer", or
+/// <c>two_factor_mismatch</c>: the app refused Flow's assertion, "… and Vantra Flow aren't set up to connect yet"); it never goes ahead without.
 /// </para>
 /// </summary>
 [ApiController]
@@ -107,7 +108,7 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
     {
         var result = await twoFactor.CompleteAsync(body.Challenge, body.Code, ct);
         if (result.Failure == TwoFactorFailure.Unavailable)
-            return StatusCode(503, new { error = result.Error, code = "two_factor_unavailable" });
+            return StatusCode(503, new { error = result.Error, code = result.Code ?? "two_factor_unavailable" });
         if (!result.Ok)
             return Unauthorized(new { error = result.Error, code = result.Failure switch
             {
@@ -164,7 +165,7 @@ public sealed class AuthController(UsersRepository users, JwtTokenService jwt, G
     {
         string? challenge;
         try { challenge = await twoFactor.GateAsync(user.VantraID!, method, ct); }
-        catch (TwoFactorUnavailableException e) { return StatusCode(503, new { error = e.Message, code = "two_factor_unavailable" }); }
+        catch (TwoFactorUnavailableException e) { return StatusCode(503, new { error = e.Message, code = e.Code }); }
         if (challenge is not null)
         {
             log.LogInformation("Sign-in waits for a two-step code ({Method})", method);

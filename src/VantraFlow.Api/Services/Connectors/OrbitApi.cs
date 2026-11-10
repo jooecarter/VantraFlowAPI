@@ -78,6 +78,7 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     public override async Task<JsonNode?> ActAsync(string key, string action, JsonObject input, string idempotencyKey, CancellationToken ct)
     {
         if (action == "record.find") return await FindAsync(key, input, ct);
+        if (action == "record.comment") return await CommentAsync(key, input, idempotencyKey, ct);
         var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
         var fields = Fields(input["fields"]);
         if (fields.Count == 0) throw new AppRefusedException(400, "None of the fields have a value.", "empty");
@@ -129,6 +130,30 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
             ["names"] = string.Join(", ", names),
         };
     }
+
+    /// <summary>
+    /// "Add comment to record": a comment on the record's timeline, as the key's creator (REST API v1
+    /// <c>…/records/{id}/comments</c>, with the step's Idempotency-Key so a retry never adds it twice).
+    /// Hands on <c>{ id, text, recordId, url }</c>.
+    /// </summary>
+    private async Task<JsonNode> CommentAsync(string key, JsonObject input, string idempotencyKey, CancellationToken ct)
+    {
+        var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
+        var recordId = Required(input, "recordId", "The record");
+        var text = Required(input, "text", "The comment");
+        if (text.Length > MaxComment) text = text[..MaxComment];
+        var res = await SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/tables/{table}/records/{Uri.EscapeDataString(recordId)}/comments",
+            new { text }, key, null, ct, idempotencyKey);
+        return new JsonObject
+        {
+            ["id"] = res["id"]?.DeepClone(),
+            ["text"] = res["text"]?.DeepClone() ?? text,
+            ["recordId"] = recordId,
+            ["url"] = $"{AppUrl}/r/{Uri.EscapeDataString(recordId)}",
+        };
+    }
+
+    public const int MaxComment = 20_000;
 
     /// <summary>The field values to write: by name or id, empty ones left out (an empty token doesn't clear a field).</summary>
     public static JsonObject Fields(JsonNode? node)

@@ -33,7 +33,7 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         {
             if ((await twoFactor.EnabledInAsync(Sub, ct)).Count == 0) return null;
         }
-        catch (TwoFactorUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
+        catch (TwoFactorUnavailableException e) { return StatusCode(502, new { error = e.Message, code = e.Problem == TwoFactorAppProblem.Mismatch ? e.Code : "app_unavailable" }); }
         return StatusCode(403, new { error = "Sign out and in again with your two-step code to connect apps.", code = "two_factor_required" });
     }
 

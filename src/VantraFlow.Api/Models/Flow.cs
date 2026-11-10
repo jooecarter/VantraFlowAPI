@@ -46,7 +46,9 @@ public static class FlowRoles
 
 // ── Wire shapes (camelCase) ───────────────────────────────────────────────
 
-public sealed record WorkspaceDto(Guid Id, string Name, string TimeZone, string Role, int MonthlyRunQuota, int RunsThisMonth, int EmailsToday, int EmailsPerDay);
+/// <summary>A workspace; <c>AlertOnFailure</c> is the failure-alert default, null until db/002 has run (the studio hides it).</summary>
+public sealed record WorkspaceDto(Guid Id, string Name, string TimeZone, string Role, int MonthlyRunQuota, int RunsThisMonth, int EmailsToday, int EmailsPerDay,
+    bool? AlertOnFailure = null);
 
 public sealed record MemberDto(string VantraId, string? Name, string? Email, string Role, string AddedAt);
 
@@ -62,7 +64,14 @@ public sealed record FlowSummaryDto(
 
 public sealed record FlowDto(
     string Id, string Name, string? Description, bool Enabled, JsonNode Definition, int Version, string? HookUrl, bool HookSigned,
-    string? PausedReason, string? TemplateId, string? NextRunAt, string UpdatedAt, string? LastRunAt, string? LastRunStatus);
+    string? PausedReason, string? TemplateId, string? NextRunAt, string UpdatedAt, string? LastRunAt, string? LastRunStatus,
+    FlowAlertsDto? Alerts = null);
+
+/// <summary>
+/// A flow's failure alert: whether it emails (<c>On</c>: its own choice, <c>Own</c>, else the workspace's default), and
+/// to whom. Null on the flow until db/002 has run.
+/// </summary>
+public sealed record FlowAlertsDto(bool On, bool? Own, bool WorkspaceDefault, string? ToName, bool ToMe);
 
 public sealed record RunSummaryDto(
     string Id, string FlowId, string FlowName, string Status, bool Test, string? ReplayOf, string StartedAt, string? FinishedAt,
@@ -86,3 +95,6 @@ public sealed record ToggleFlowBody(bool Enabled);
 public sealed record TestStepBody(JsonNode? Definition, string? StepId, JsonNode? Data);
 public sealed record TestFlowBody(JsonNode? Definition, JsonNode? Trigger);
 public sealed record HookSecretBody(bool Signed);
+/// <summary>A flow's alert: true (email me), false (never), null (the workspace's default).</summary>
+public sealed record FlowAlertsBody(bool? On);
+public sealed record WorkspaceAlertsBody(bool On);
