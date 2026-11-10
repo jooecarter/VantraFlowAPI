@@ -1,0 +1,23 @@
+// Copy this file to `appsettings.Development.local.json` (gitignored) and fill in
+// the real values. It is loaded ONLY in Development and overrides appsettings.json.
+//
+//  - ConnectionStrings:Vantra      → the SHARED Vantra identity DB (dbo.UserDetails)
+//                                    — the SAME connection the other Vantra APIs use.
+//  - ConnectionStrings:VantraFlow  → Vantra Flow's own database (db/001_flow.sql).
+//  - Jwt:Key                       → the SAME >=32-char signing key as the other
+//                                    Vantra APIs, so one login works across the suite
+//                                    and the connect assertion verifies in Orbit and Projects.
+//  - Google/Microsoft              → only needed for social sign-in.
+//  - Graph / Smtp                  → only needed to actually send email.
+//
+// Password-free against Azure SQL, as Orbit's:
+//   "Server=tcp:vantra.database.windows.net,1433;Database=vantraflow;Authentication=Active Directory Default;Encrypt=True;"
+{
+  "ConnectionStrings": {
+    "Vantra": "Server=...;Database=Vantra;User Id=...;Password=...;Encrypt=True;TrustServerCertificate=True;",
+    "VantraFlow": "Server=...;Database=VantraFlow;User Id=...;Password=...;Encrypt=True;TrustServerCertificate=True;"
+  },
+  "Jwt": {
+    "Key": "replace-with-the-shared-vantra-signing-key-min-32-chars"
+  }
+}

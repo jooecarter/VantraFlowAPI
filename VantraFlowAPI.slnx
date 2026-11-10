@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VantraFlow.Api/VantraFlow.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VantraFlow.Api.Tests/VantraFlow.Api.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/sqlcheck/SqlCheck.csproj" />
+  </Folder>
+</Solution>
