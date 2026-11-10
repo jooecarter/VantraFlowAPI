@@ -1,0 +1,33 @@
+# ─── Build output ────────────────────────────────────────────────────────────
+bin/
+obj/
+out/
+publish/
+artifacts/
+
+# ─── Secrets — never commit ─────────────────────────────────────────────────
+# Local-only overrides that hold DB connection strings and the JWT signing
+# key. Production config lives in App Service config.
+appsettings.*.local.json
+appsettings.Development.local.json
+appsettings.Production.local.json
+.env
+.env.*
+secrets.json
+*.pfx
+*.snk
+
+# ─── IDE / tooling ──────────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.swp
+.DS_Store
+
+# ─── NuGet ──────────────────────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+project.lock.json
