@@ -136,10 +136,12 @@ public sealed class TwoFactorSignIn(ITwoFactorApps apps, ITwoFactorGuards guards
         return answers.Where(x => x.On).Select(x => x.App).ToList();
     }
 
-    /// <summary>Logs the app, the kind of failure and the HTTP status (never a token or an assertion).</summary>
+    /// <summary>Logs the app, the kind of failure, the HTTP status and what the app said (never a token or an assertion).</summary>
     private TwoFactorUnavailableException Logged(TwoFactorUnavailableException e, string what)
     {
-        log.LogWarning("{What}: {App} {Problem} (HTTP {Status})", what, e.App, e.Problem, e.Status?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none");
+        // The app's own words (its error text, with its reason) — never a token or the assertion.
+        log.LogWarning("{What}: {App} {Problem} (HTTP {Status}): {AppSaid}", what, e.App, e.Problem,
+            e.Status?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none", e.InnerException?.Message);
         return e;
     }
 
