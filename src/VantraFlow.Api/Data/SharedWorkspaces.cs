@@ -14,8 +14,12 @@ namespace VantraFlow.Api.Data;
 /// <param name="TimeZone">An IANA zone, or null when unset.</param>
 public sealed record SharedWorkspace(Guid Id, string Name, string? Color, string? Logo, string? TimeZone);
 
-/// <summary>The optional <c>shared</c> block on a workspace in the list: <c>{ id }</c> (later the name and logo too).</summary>
-public sealed record SharedWorkspaceRef(string Id);
+/// <summary>
+/// The optional <c>shared</c> block on a workspace in the list: <c>{ id, timeZone? }</c>. Stage 3: the shared time zone
+/// rides along, for the apps that keep none of their own.
+/// </summary>
+public sealed record SharedWorkspaceRef(string Id,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? TimeZone = null);
 
 /// <summary>One link row as read: this app's local workspace id and its shared record.</summary>
 public sealed class SharedWorkspaceRow
@@ -124,7 +128,7 @@ public sealed class SharedWorkspaces(ISharedWorkspaceStore store, ILogger<Shared
 
     /// <summary>The wire block for a workspace, or null (and so left out of the answer).</summary>
     public static SharedWorkspaceRef? Ref(IReadOnlyDictionary<Guid, SharedWorkspace> shared, Guid localId) =>
-        shared.TryGetValue(localId, out var s) ? new SharedWorkspaceRef(s.Id.ToString()) : null;
+        shared.TryGetValue(localId, out var s) ? new SharedWorkspaceRef(s.Id.ToString(), s.TimeZone) : null;
 
     private async Task<bool> ReadyAsync()
     {

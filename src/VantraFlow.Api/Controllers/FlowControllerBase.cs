@@ -39,6 +39,9 @@ public abstract class FlowControllerBase(IWorkspaceStore workspaces) : Controlle
         // A shared workspace (stage 2): Flow's own list is brought in line with the shared one first when it's due, so
         // a change made in another Vantra app (someone removed, a role changed) applies here too.
         if (HttpContext?.RequestServices?.GetService<Shared.SharedSync>() is { } sync) await sync.TouchAsync(workspaceId);
+        // Stage 3: a workspace that has Flow switched off is out of reach (its data is kept for when Flow is added again).
+        if (HttpContext?.RequestServices?.GetService<Shared.SharedSpaces>() is { } spaces && await spaces.IsOffAsync(Shared.SharedApps.Flow, workspaceId))
+            return (null, NotFound(new { error = "That workspace hasn't got Vantra Flow at the moment.", code = "no_workspace" }));
         var role = await workspaces.RoleAsync(workspaceId, Sub);
         return role is null ? (null, NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" })) : (role, null);
     }

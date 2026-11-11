@@ -217,6 +217,37 @@ public sealed class WorkspaceEndpointTests
         new(db, users, features, acceptLog) { ControllerContext = Http.As(sub, email) };
 
     [Fact]
+    public async Task Todays_studio_gets_no_automatic_workspace_an_older_one_still_does()
+    {
+        // Stage 3: someone with no workspace chooses (create one, or add Flow to a shared one).
+        static IReadOnlyList<WorkspaceDto> Of(ActionResult<IReadOnlyList<WorkspaceDto>> r) =>
+            Assert.IsAssignableFrom<IReadOnlyList<WorkspaceDto>>(((ObjectResult)r.Result!).Value);
+        Assert.Empty(Of(await Workspaces("newcomer").List("0")));
+        Assert.DoesNotContain(db.Log, l => l.StartsWith("create:"));
+        var first = Assert.Single(Of(await Workspaces("newcomer").List()));
+        Assert.Equal("My workspace", first.Name);
+    }
+
+    [Fact]
+    public void The_two_retired_my_workspaces_are_never_made_shared()
+    {
+        var spaces = new VantraFlow.Api.Shared.FlowSpaces(db, features, null!);
+        foreach (var id in VantraFlow.Api.Shared.FlowSpaces.Retired)
+            Assert.Null(spaces.SeedAsync(id).GetAwaiter().GetResult());
+        Assert.Contains(Guid.Parse("B25498CA-A9BB-4AD3-BD8C-559C639B82E8"), VantraFlow.Api.Shared.FlowSpaces.Retired);
+        Assert.Contains(Guid.Parse("2CEB40CB-FB3F-4BFD-96AA-89AC2B3248A7"), VantraFlow.Api.Shared.FlowSpaces.Retired);
+    }
+
+    [Fact]
+    public async Task A_flow_workspace_seeds_its_shared_record_as_it_is()
+    {
+        var seed = await new VantraFlow.Api.Shared.FlowSpaces(db, features, null!).SeedAsync(ws);
+        Assert.NotNull(seed);
+        Assert.Equal(("olga", "Northwind"), (seed.Owner, seed.Look.Name));
+        Assert.Equal(["owner", "admin", "member"], seed.Members.Select(m => m.Role));
+    }
+
+    [Fact]
     public async Task Strangers_see_nothing_and_members_change_nothing()
     {
         Assert.Equal(404, Http.Status(await Members("eve").Members(ws)));

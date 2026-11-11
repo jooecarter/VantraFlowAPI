@@ -163,7 +163,7 @@ public sealed class SharedWorkspacesTests
         var withLinks = Dtos(await Controller(Reader(store)).List());
         Assert.Equal(SharedA.ToString(), withLinks.Single(d => d.Id == linked).Shared!.Id);
         Assert.Null(withLinks.Single(d => d.Id == plain).Shared);
-        Assert.Contains($"\"shared\":{{\"id\":\"{SharedA}\"}}", JsonSerializer.Serialize(withLinks.Single(d => d.Id == linked), opts));
+        Assert.Contains($"\"shared\":{{\"id\":\"{SharedA}\"", JsonSerializer.Serialize(withLinks.Single(d => d.Id == linked), opts));
 
         // No reader, or no shared tables yet: exactly today's answer.
         var before = JsonSerializer.Serialize(Dtos(await Controller(null).List()), opts);
