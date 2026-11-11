@@ -28,6 +28,17 @@ WHERE WorkspaceId = @WorkspaceId AND StartedAt >= @Since AND Test = 0
 GROUP BY FlowId;", new { WorkspaceId = workspaceId, Since = since })).ToList();
     }
 
+    /// <summary>Each flow's runs and failures per day (UTC) since <paramref name="since"/>, test runs left out.</summary>
+    public async Task<IReadOnlyList<FlowDayRow>> DailyAsync(Guid workspaceId, DateTime since)
+    {
+        using var conn = factory.Flow();
+        return (await conn.QueryAsync<FlowDayRow>(@"
+SELECT FlowId, CAST(StartedAt AS date) AS [Day], COUNT(*) AS Runs, SUM(CASE WHEN Status = N'failed' THEN 1 ELSE 0 END) AS Failures
+FROM flow.Runs
+WHERE WorkspaceId = @WorkspaceId AND StartedAt >= @Since AND Test = 0
+GROUP BY FlowId, CAST(StartedAt AS date);", new { WorkspaceId = workspaceId, Since = since })).ToList();
+    }
+
     public async Task<FlowRow?> GetAsync(Guid workspaceId, string id)
     {
         using var conn = factory.Flow();
