@@ -25,6 +25,25 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N
     public const string VersionsProbeSql = @"
 SELECT CASE WHEN OBJECT_ID(N'flow.FlowVersions', N'U') IS NOT NULL THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
 
+    /// <summary>db/004 (Slack, Microsoft 365, Google): the index it makes last, by name.</summary>
+    public const string ConnectorsProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PollCursors_Due' AND object_id = OBJECT_ID(N'flow.PollCursors'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool connectorsReady;
+    private DateTime connectorsCheckedAt = DateTime.MinValue;
+
+    /// <summary>Has db/004 run? Until it has, the outside connectors hide themselves and nothing polls.</summary>
+    public async Task<bool> ConnectorsReadyAsync()
+    {
+        if (connectorsReady) return true;
+        if (DateTime.UtcNow - connectorsCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        connectorsReady = await conn.ExecuteScalarAsync<bool>(ConnectorsProbeSql);
+        connectorsCheckedAt = DateTime.UtcNow;
+        return connectorsReady;
+    }
+
     private volatile bool versionsReady;
     private DateTime versionsCheckedAt = DateTime.MinValue;
 

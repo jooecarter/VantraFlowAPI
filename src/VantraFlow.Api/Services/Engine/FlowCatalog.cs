@@ -31,6 +31,10 @@ public static class FlowCatalog
         E("schedule", "weekly", "Every week", ("time", "a time"), ("days", "the days")),
         E("webhook", "catch", "Webhook received"),
         E("flow", "called", "Called by another flow"),
+        E("slack", "message", "New message in channel", ("channel", "a channel")),
+        E("microsoft", "mail.new", "New email in Outlook"),
+        E("google", "gmail.new", "New email in Gmail"),
+        E("google", "sheets.row.new", "New row in a sheet", ("spreadsheet", "the spreadsheet"), ("sheet", "the sheet")),
     ];
 
     public static readonly IReadOnlyList<CatalogEntry> Actions =
@@ -47,6 +51,15 @@ public static class FlowCatalog
         E("email", "send", "Send email", ("to", "who it goes to"), ("subject", "a subject")),
         E("http", "request", "HTTP request", ("url", "the URL")),
         E("flow", "run", "Run another flow", ("flowId", "the flow to run")),
+        E("slack", "message.send", "Send channel message", ("channel", "a channel"), ("text", "the message")),
+        E("slack", "dm.send", "Send direct message", ("user", "who it goes to"), ("text", "the message")),
+        E("microsoft", "mail.send", "Send email (Outlook)", ("to", "who it goes to"), ("subject", "a subject")),
+        E("microsoft", "teams.post", "Post to a Teams channel", ("teamId", "a team"), ("channelId", "a channel"), ("text", "the message")),
+        E("microsoft", "event.create", "Create calendar event", ("subject", "a title"), ("start", "when it starts")),
+        E("google", "gmail.send", "Send email (Gmail)", ("to", "who it goes to"), ("subject", "a subject")),
+        E("google", "sheets.row.add", "Add row", ("spreadsheet", "the spreadsheet"), ("sheet", "the sheet"), ("values", "at least one column")),
+        E("google", "sheets.row.find", "Find row", ("spreadsheet", "the spreadsheet"), ("sheet", "the sheet"), ("column", "the column to look in")),
+        E("google", "sheets.row.update", "Update row", ("spreadsheet", "the spreadsheet"), ("sheet", "the sheet"), ("rowNumber", "the row"), ("values", "at least one column")),
     ];
 
     public static CatalogEntry? Trigger(string? app, string? key) => Triggers.FirstOrDefault(t => t.App == app && t.Key == key);
@@ -59,6 +72,16 @@ public static class FlowCatalog
         if (def.Trigger.App is "orbit" or "projects") apps.Add(def.Trigger.App);
         foreach (var s in def.AllSteps())
             if (s.Type == StepTypes.Action && s.App is "orbit" or "projects") apps.Add(s.App);
+        return apps;
+    }
+
+    /// <summary>The outside apps a definition needs connected (Slack, Microsoft 365, Google), trigger included.</summary>
+    public static IReadOnlySet<string> ProvidersNeeded(FlowDefinition def)
+    {
+        var apps = new HashSet<string>(StringComparer.Ordinal);
+        if (OAuth.OAuthProviders.IsProvider(def.Trigger.App)) apps.Add(def.Trigger.App);
+        foreach (var s in def.AllSteps())
+            if (s.Type == StepTypes.Action && OAuth.OAuthProviders.IsProvider(s.App)) apps.Add(s.App!);
         return apps;
     }
 
@@ -98,6 +121,22 @@ public static class FlowCatalog
             ["actor"] = "Sample person",
         },
         ("schedule", _) => new JsonObject { ["scheduledFor"] = now.ToString("o"), ["timeZone"] = "UTC" },
+        ("slack", _) => new JsonObject
+        {
+            ["text"] = "Can someone look at the Harbour Foods proposal?", ["user"] = "U0SAMPLE", ["channel"] = Tokens.Text(t.Config["channel"]) is { Length: > 0 } ch ? ch : "C0SAMPLE",
+            ["ts"] = "1794387600.000100", ["threadTs"] = "", ["isReply"] = false, ["isBot"] = false, ["sentAt"] = now.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+        },
+        ("microsoft", _) or ("google", "gmail.new") => new JsonObject
+        {
+            ["id"] = "msg_sample", ["subject"] = "Proposal for Harbour Foods", ["from"] = new JsonObject { ["name"] = "Ada Lovelace", ["email"] = "ada@example.com" },
+            ["to"] = "you@example.com", ["receivedAt"] = now.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), ["preview"] = "Hi, here's the proposal we talked about…",
+            ["snippet"] = "Hi, here's the proposal we talked about…", ["link"] = "https://example.com/mail/msg_sample",
+        },
+        ("google", _) => new JsonObject
+        {
+            ["rowNumber"] = 2, ["sheet"] = Tokens.Text(t.Config["sheet"]),
+            ["values"] = new JsonObject { ["Name"] = "Ada Lovelace", ["Email"] = "ada@example.com", ["Company"] = "Analytical Engines" },
+        },
         ("flow", _) => new JsonObject
         {
             ["input"] = new JsonObject { ["name"] = "Ada Lovelace", ["email"] = "ada@example.com" },

@@ -50,10 +50,15 @@ public sealed class FlowSecrets
         }
     }
 
-    public byte[] Protect(string secret, Guid workspaceId, string rowId)
+    /// <summary>OAuth tokens and sealed states (VARBINARY(MAX) columns): a Microsoft access token runs to a few KB.</summary>
+    public const int MaxLargeCipherBytes = 32 * 1024;
+
+    public byte[] Protect(string secret, Guid workspaceId, string rowId) => Protect(secret, workspaceId, rowId, MaxCipherBytes);
+
+    public byte[] Protect(string secret, Guid workspaceId, string rowId, int maxBytes)
     {
         var plain = Encoding.UTF8.GetBytes(secret);
-        if (HeaderSize + plain.Length > MaxCipherBytes) throw new ArgumentException("The secret is too long to store.", nameof(secret));
+        if (HeaderSize + plain.Length > maxBytes) throw new ArgumentException("The secret is too long to store.", nameof(secret));
         var (version, key) = dedicatedKey is { } k ? (DedicatedKeyVersion, k) : (DerivedKeyVersion, derivedKey);
         var output = new byte[HeaderSize + plain.Length];
         output[0] = version;

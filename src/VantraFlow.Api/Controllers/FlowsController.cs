@@ -30,7 +30,8 @@ namespace VantraFlow.Api.Controllers;
 /// </summary>
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
-    FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions) : FlowControllerBase(workspaces)
+    FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
+    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions) : FlowControllerBase(workspaces)
 {
     private FlowLimits Limits => FlowLimits.From(config);
 
@@ -99,6 +100,7 @@ public sealed class FlowsController(
         await KeepVersionAsync(saved, note);
         if (f.Enabled)
         {
+            await JoinSlackAsync(workspaceId, def, ct);
             // The trigger may now listen elsewhere: keep the apps' webhooks in step.
             try { await SyncAsync(workspaceId, f.TriggerApp, updated.TriggerApp, ct); }
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
@@ -172,9 +174,17 @@ public sealed class FlowsController(
             foreach (var app in FlowCatalog.AppsNeeded(def))
                 if (await connections.OpenAsync(workspaceId, app) is null)
                     errors.Add(new DefinitionError(null, $"Connect {(app == "orbit" ? "Vantra Orbit" : "Vantra Projects")} first."));
+            var outside = FlowCatalog.ProvidersNeeded(def);
+            if (outside.Count > 0 && !await schema.ConnectorsReadyAsync())
+                errors.Add(new DefinitionError(null, "Slack, Microsoft 365 and Google arrive with the next server update."));
+            else
+                foreach (var p in outside)
+                    if (await oauth.LiveAsync(workspaceId, p) is null)
+                        errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
             if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
         }
         await flows.SetEnabledAsync(workspaceId, id, body.Enabled, Sub);
+        if (body.Enabled) await JoinSlackAsync(workspaceId, def, ct);
         try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
         catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
         {
@@ -322,6 +332,13 @@ public sealed class FlowsController(
         return new FlowAlertsDto(a.On ?? a.WorkspaceDefault, a.On, a.WorkspaceDefault, member is null ? null : member.Name ?? member.Email, to == Sub);
     }
 
+    /// <summary>A Slack trigger hears a channel only when the app is in it: join a public one (a private one needs an invite).</summary>
+    private async Task JoinSlackAsync(Guid workspaceId, FlowDefinition def, CancellationToken ct)
+    {
+        if (def.Trigger.App == "slack" && Tokens.Text(def.Trigger.Config["channel"]) is { Length: > 0 } channel && await schema.ConnectorsReadyAsync())
+            await oauthActions.JoinSlackChannelAsync(workspaceId, channel, ct);
+    }
+
     /// <summary>Sync the apps whose webhooks a change may affect (the trigger's app before and after).</summary>
     private async Task SyncAsync(Guid workspaceId, string before, string after, CancellationToken ct)
     {
@@ -333,7 +350,12 @@ public sealed class FlowsController(
     private static FlowRow Shape(FlowRow f, FlowDefinition def)
     {
         var t = def.Trigger;
-        var scope = t.App == "orbit" ? Tokens.Text(t.Config["tableId"]) is { Length: > 0 and <= 64 } s ? s : null : null;
+        var scope = t.App switch
+        {
+            "orbit" => Tokens.Text(t.Config["tableId"]) is { Length: > 0 and <= 64 } s ? s : null,
+            "slack" => Tokens.Text(t.Config["channel"]) is { Length: > 0 and <= 64 } c ? c : null,
+            _ => null,
+        };
         var hook = t.App == "webhook" ? f.HookId ?? FlowSecrets.NewId("fhk_") : null;
         return f with
         {

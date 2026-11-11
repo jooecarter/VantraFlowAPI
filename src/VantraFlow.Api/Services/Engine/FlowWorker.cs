@@ -164,6 +164,9 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Schedule tick failed"); }
             try { await sp.GetRequiredService<FailureAlerts>().SendDueAsync(now, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Failure alerts tick failed"); }
+            // Polling triggers (Outlook, Gmail, Google Sheets), once db/004 has run.
+            try { await sp.GetRequiredService<OAuth.PollTriggers>().RunDueAsync(DateTime.UtcNow, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Poll tick failed"); }
         }
 
         // 4. Housekeeping.
@@ -172,6 +175,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             nextPrune = now.AddHours(1);
             try { await engine.PruneAsync(now, int.TryParse(config["Flow:KeepRunsDays"], out var d) ? Math.Clamp(d, 7, 365) : 30); }
             catch (Exception ex) { log.LogInformation(ex, "Flow prune failed"); }
+            try { if (await sp.GetRequiredService<FlowSchema>().ConnectorsReadyAsync()) await sp.GetRequiredService<OAuthRepository>().PruneAsync(now); }
+            catch (Exception ex) { log.LogInformation(ex, "Connector prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;
