@@ -15,7 +15,8 @@ namespace VantraFlow.Api.Services.Connectors;
 /// and HTTP requests through the guarded client (<see cref="NetworkGuard"/>: public addresses only, checked at
 /// connect time; no redirects). Never logs a key, a secret or a request's headers.
 /// </summary>
-public sealed class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits)
+public sealed class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
+    FlowsRepository flows, FlowSignal signal)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -37,12 +38,42 @@ public sealed class StepActions(Connections connections, EmailService email, Eng
                     (api, key) => api.ActAsync(key, step.Action ?? "", call.Input, $"flow:{call.RunId}:{step.Id}", ct))),
                 "email" => await EmailAsync(call, ct),
                 "http" => await HttpAsync(call.Input, ct),
+                "flow" => await RunFlowAsync(call),
                 _ => StepOutcome.Fail("This step isn't something Vantra Flow can do."),
             };
         }
         catch (AppUnavailableException e) { return StepOutcome.Fail(e.Message, retryable: true); }
         catch (AppRevokedException e) { return StepOutcome.Fail(e.Message); }
         catch (AppRefusedException e) { return StepOutcome.Fail(e.Message, retryable: e.Status is 409 or 423); }
+    }
+
+    // ── Run another flow ──
+
+    /// <summary>
+    /// Queues a run of another flow in this workspace (on, and started by "Called by another flow"), handing it the
+    /// step's <c>input</c> and who called. It doesn't wait. Refused past <see cref="SubFlowRules.MaxDepth"/>.
+    /// </summary>
+    private async Task<StepOutcome> RunFlowAsync(StepCall call)
+    {
+        var depth = call.Depth + 1;
+        if (depth > SubFlowRules.MaxDepth) return StepOutcome.Fail($"Flows can call each other at most {SubFlowRules.MaxDepth} deep.");
+        var targetId = Tokens.Text(call.Input["flowId"]).Trim();
+        if (await flows.GetAsync(call.WorkspaceId, targetId) is not { } target) return StepOutcome.Fail("That flow doesn't exist any more.");
+        if (target.TriggerApp != "flow") return StepOutcome.Fail($"“{target.Name}” doesn't start with Called by another flow.");
+        if (!target.Enabled) return StepOutcome.Fail($"“{target.Name}” is off. Turn it on to run it from here.");
+        var caller = await flows.GetAsync(call.WorkspaceId, call.FlowId);
+        var payload = new JsonObject
+        {
+            ["input"] = call.Input["input"] is JsonObject input ? input.DeepClone() : new JsonObject(),
+            ["caller"] = new JsonObject
+            {
+                ["flowId"] = call.FlowId, ["flowName"] = caller?.Name ?? "", ["runId"] = call.RunId, ["stepId"] = call.Step.Id, ["depth"] = depth, ["test"] = call.Test,
+            },
+        };
+        var id = FlowSecrets.NewRowId("fev_");
+        await engine.EnqueueAsync(call.WorkspaceId, EventSources.Manual, "called", null, target.Id, payload.ToJsonString(), false, DateTime.UtcNow, id: id);
+        signal.Poke();
+        return StepOutcome.Done(new JsonObject { ["flowId"] = target.Id, ["flowName"] = target.Name, ["queued"] = true, ["eventId"] = id });
     }
 
     // ── Email ──

@@ -11,6 +11,7 @@ src/VantraFlow.Api        the API
 tests/VantraFlow.Api.Tests xunit (no database needed)
 db/001_flow.sql           the schema: one idempotent, Azure-ready batch
 db/002_failure_alerts.sql failure alerts: the per-flow setting and the workspace default
+db/003_flow_versions.sql  versions: a copy of each save, to look at and restore
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -55,6 +56,17 @@ bash scripts/sqlcheck.sh
   - "Repeat for each": the steps inside run once per item of a list from the trigger or an earlier step
     (`{{loop.item…}}`), at most 100 items (a test: the first 3), stopping or carrying on when an item fails, with
     each item's result in the run log;
+  - paths: up to five, each with its own condition, tried top to bottom, and an optional "otherwise" (if / else
+    keeps its own shape, so older flows run as they did);
+  - "Only continue if": a filter with and / or groups; when it doesn't pass the run stops and succeeds (inside a
+    Repeat for each, just that item stops);
+  - the formatter: text (trim, case, replace, split, extract with a regular expression under a 250 ms limit),
+    numbers (format, round, maths), dates (parse, format, add or subtract, time zone) and lookup tables, each with
+    one clear result, `{{steps.id.output}}`;
+  - "Set variable": set, add to or append to a run's variable, read later as `{{vars.name}}` (it carries across a
+    loop's items, so a loop can count or collect);
+  - "Run another flow": starts a flow whose trigger is "Called by another flow" with the inputs you give it
+    (`{{trigger.input…}}`), without waiting; flows can call each other at most three deep;
   - retries with backoff;
   - a run log with each step's input, output, error and duration;
   - Replay.
@@ -83,8 +95,12 @@ bash scripts/sqlcheck.sh
 - **Actions.** Orbit: create, update and find records, and add a comment to a record. Projects: create projects
   and tasks, find tasks, update a task (status, assignee, due date) and add a comment.
 
+- **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
+  restore, which saves it again as the newest. Runs record the version they ran.
+
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
 waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.
+Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`.
 
 ## Settings
 
@@ -108,5 +124,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

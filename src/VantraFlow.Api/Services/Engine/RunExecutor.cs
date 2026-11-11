@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace VantraFlow.Api.Services.Engine;
 
 /// <summary>One action to carry out: which step, its input with the tokens filled in, and for which run.</summary>
-public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test);
+public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test, int Depth = 0);
 
 /// <summary>
 /// How an action went. <see cref="Retryable"/>: worth trying again (a timeout, a 5xx, a 429, the app unreachable);
@@ -46,6 +46,7 @@ public sealed class RunState
     {
         ["trigger"] = trigger?.DeepClone() ?? new JsonObject(),
         ["steps"] = new JsonObject(),
+        ["vars"] = new JsonObject(),
         ["run"] = new JsonObject { ["id"] = runId, ["startedAt"] = startedAt.ToString("o"), ["test"] = test },
         ["workspace"] = new JsonObject { ["name"] = workspaceName, ["timeZone"] = timeZone },
     };
@@ -96,6 +97,10 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         StepTypes.Delay => "Delay",
         StepTypes.Branch => "If / else",
         StepTypes.Loop => "Repeat for each",
+        StepTypes.Paths => "Paths",
+        StepTypes.Filter => "Only continue if",
+        StepTypes.Formatter => "Format",
+        StepTypes.Variable => "Set variable",
         _ => FlowCatalog.Action(s.App, s.Action)?.Title ?? "Step",
     };
 
@@ -126,6 +131,16 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
                     break;
                 case StepTypes.Loop:
                     if (!Loop(s, step, started, logs)) return logs;
+                    break;
+                case StepTypes.Paths:
+                    Paths(s, step, started, logs);
+                    break;
+                case StepTypes.Filter:
+                    if (!Filter(s, step, started, logs)) return logs;
+                    break;
+                case StepTypes.Formatter:
+                case StepTypes.Variable:
+                    if (!Transform(s, step, started, logs)) return logs;
                     break;
                 default:
                     if (!await ActionAsync(s, step, started, logs, ct)) return logs;
@@ -175,15 +190,81 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
     {
         var cond = Conditions.Parse(step.Config["condition"]);
         var result = cond is not null && Conditions.Evaluate(cond, s.Data);
-        var input = new JsonArray((cond?.Rules ?? []).Select(r => (JsonNode)new JsonObject
-        {
-            ["left"] = Tokens.Render(r.Left, s.Data),
-            ["op"] = r.Op,
-            ["right"] = r.Right is null ? null : Tokens.Render(r.Right, s.Data),
-        }).ToArray());
         s.Steps[step.Id] = new JsonObject { ["result"] = result, ["path"] = result ? "then" : "else" };
-        logs.Add(Log(step, NameIn(s, step), "succeeded", 0, new JsonObject { ["match"] = cond?.Match ?? "all", ["rules"] = input }, s.Steps[step.Id], null, started, 0));
+        logs.Add(Log(step, NameIn(s, step), "succeeded", 0, Conditions.Explain(cond, s.Data), s.Steps[step.Id], null, started, 0));
         s.Position = Positions.Enter(s.Definition, s.Position!, result);
+    }
+
+    /// <summary>Paths: down the first path whose condition holds, else "otherwise" (when on), else on past the step.</summary>
+    private void Paths(RunState s, StepDef step, DateTime started, List<StepLog> logs)
+    {
+        var paths = step.Paths ?? [];
+        int? chosen = null;
+        var tried = new JsonArray();
+        for (var i = 0; i < paths.Count; i++)
+        {
+            var cond = Conditions.Parse(paths[i].Condition);
+            var hit = cond is not null && Conditions.Evaluate(cond, s.Data);
+            var explained = Conditions.Explain(cond, s.Data);
+            explained["path"] = PathRules.NameOf(paths[i], i);
+            explained["passed"] = hit;
+            tried.Add(explained);
+            if (hit) { chosen = i; break; }
+        }
+        var otherwise = chosen is null && PathRules.HasOtherwise(step);
+        var name = chosen is { } c ? PathRules.NameOf(paths[c], c) : otherwise ? "Otherwise" : null;
+        s.Steps[step.Id] = new JsonObject { ["path"] = name, ["number"] = chosen is { } n ? n + 1 : null, ["matched"] = chosen is not null };
+        logs.Add(Log(step, NameIn(s, step), "succeeded", 0, new JsonObject { ["paths"] = tried }, s.Steps[step.Id],
+            name is null ? "No path matched, so the run went on past them." : null, started, 0));
+        s.Position = Positions.EnterPath(s.Definition, s.Position!, chosen ?? (otherwise ? -1 : null));
+    }
+
+    /// <summary>
+    /// "Only continue if": when the condition holds the run goes on; when it doesn't, the run stops here and succeeds
+    /// (inside a Repeat for each, just this item stops and the next one starts). False when the run stops.
+    /// </summary>
+    private bool Filter(RunState s, StepDef step, DateTime started, List<StepLog> logs)
+    {
+        var cond = Conditions.Parse(step.Config["condition"]);
+        var passed = cond is not null && Conditions.Evaluate(cond, s.Data);
+        s.Steps[step.Id] = new JsonObject { ["passed"] = passed };
+        var loopPath = Positions.LoopOf(s.Position);
+        var note = passed ? null : loopPath is null ? "It didn't pass, so the run stopped here." : "It didn't pass, so this item stopped here.";
+        logs.Add(Log(step, NameIn(s, step), "succeeded", 0, Conditions.Explain(cond, s.Data), s.Steps[step.Id], note, started, 0));
+        if (passed) { s.Position = Positions.After(s.Definition, s.Position!); return true; }
+        if (loopPath is not null && Positions.StepAt(s.Definition, loopPath) is { Type: StepTypes.Loop } loop && s.Steps[loop.Id] is JsonObject st && Running(st))
+        {
+            st["itemSkipped"] = true;
+            s.Position = loopPath;
+            return true;
+        }
+        s.Position = null;
+        s.Status = RunStatuses.Succeeded;
+        return false;
+    }
+
+    /// <summary>A formatter or a Set variable step: worked out here, from the run's data. False when it fails the run.</summary>
+    private bool Transform(RunState s, StepDef step, DateTime started, List<StepLog> logs)
+    {
+        var input = Tokens.RenderNode(step.Config, s.Data) as JsonObject ?? new JsonObject();
+        JsonObject? output;
+        string? error;
+        if (step.Type == StepTypes.Formatter)
+            (output, error) = Formatter.Run(input, Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null);
+        else
+            (output, error) = VariableRules.Apply(input, s.Data["vars"] as JsonObject ?? (JsonObject)(s.Data["vars"] = new JsonObject()));
+        if (output is not null)
+        {
+            s.Steps[step.Id] = output;
+            logs.Add(Log(step, NameIn(s, step), "succeeded", 0, input, output, null, started, 0));
+            s.Position = Positions.After(s.Definition, s.Position!);
+            return true;
+        }
+        logs.Add(Log(step, NameIn(s, step), "failed", 0, input, null, error, started, 0));
+        if (ItemFailed(s, error ?? "Failed.", started, logs)) return true;
+        s.Status = RunStatuses.Failed;
+        s.Error = $"{NameIn(s, step)}: {error}";
+        return false;
     }
 
     /// <summary>False when the run stops here (failed, or waiting to retry).</summary>
@@ -199,7 +280,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             timeout.CancelAfter(TimeSpan.FromSeconds(limits.StepTimeoutSeconds));
             try
             {
-                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test), timeout.Token);
+                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data)), timeout.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -263,8 +344,10 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             var items = st["items"] as JsonArray ?? [];
             var index = Int(st["index"]);
             var error = st["itemError"] is JsonValue ev && ev.TryGetValue<string>(out var e) ? e : null;
+            var skipped = st["itemSkipped"] is not null;
             st.Remove("itemError");
-            Note(st, index, error);
+            st.Remove("itemSkipped");
+            Note(st, index, error, skipped);
             if (index + 1 < items.Count)
             {
                 StartItem(s, st, index + 1);
@@ -315,7 +398,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
     }
 
     /// <summary>How the item at <paramref name="index"/> went, in the loop's results.</summary>
-    private static void Note(JsonObject state, int index, string? error)
+    private static void Note(JsonObject state, int index, string? error, bool skipped = false)
     {
         var items = state["items"] as JsonArray ?? [];
         var results = state["results"] as JsonArray ?? (JsonArray)(state["results"] = new JsonArray());
@@ -323,7 +406,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         {
             ["number"] = index + 1,
             ["label"] = index < items.Count ? LoopRules.Label(items[index]) : "",
-            ["status"] = error is null ? "succeeded" : "failed",
+            ["status"] = error is not null ? "failed" : skipped ? "skipped" : "succeeded",
         };
         if (error is not null) r["error"] = error.Length > 300 ? error[..300] : error;
         results.Add(r);
@@ -336,11 +419,13 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         var count = (state["items"] as JsonArray)?.Count ?? 0;
         var total = Int(state["total"]);
         var failed = results.Count(r => Tokens.Text(r?["status"]) == "failed");
+        var skipped = results.Count(r => Tokens.Text(r?["status"]) == "skipped");
         var output = new JsonObject
         {
             ["count"] = count,
-            ["succeeded"] = results.Count - failed,
+            ["succeeded"] = results.Count - failed - skipped,
             ["failed"] = failed,
+            ["skipped"] = skipped,
             ["total"] = total,
             ["results"] = results.DeepClone(),
         };

@@ -22,11 +22,15 @@ namespace VantraFlow.Api.Controllers;
 /// POST   api/w/{ws}/flows/{id}/test               { definition, trigger? } → the test run, every step for real
 /// POST   api/w/{ws}/flows/{id}/test-step          { definition, stepId, data } → that step's log line
 /// PUT    api/w/{ws}/flows/{id}/alerts             { on: true | false | null } → the flow's failure alert (db/002; 503 before)
+/// GET    api/w/{ws}/flows/{id}/versions           → its saved versions, newest first (db/003; 503 before)
+/// GET    api/w/{ws}/flows/{id}/versions/{v}       → one, with its definition
+/// POST   api/w/{ws}/flows/{id}/versions/{v}/restore → saved again as the newest version → { flow, errors }
 /// </code>
+/// Every save (and the first, on create) keeps a version once db/003 has run.
 /// </summary>
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
-    FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema) : FlowControllerBase(workspaces)
+    FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions) : FlowControllerBase(workspaces)
 {
     private FlowLimits Limits => FlowLimits.From(config);
 
@@ -51,6 +55,7 @@ public sealed class FlowsController(
             body.TemplateId is { Length: <= 40 } t ? t : null, null, Sub, now, Sub, now, null, null), def);
         await flows.InsertAsync(row);
         var saved = (await flows.GetAsync(workspaceId, row.Id))!;
+        await KeepVersionAsync(saved, null);
         return StatusCode(201, new { flow = await DtoAsync(saved), errors = DefinitionRules.Validate(def, Limits) });
     }
 
@@ -69,11 +74,23 @@ public sealed class FlowsController(
         if (refusal is not null) return refusal;
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
         if (Definition(body.Definition) is not { } def) return BadRequest(new { error = "That flow couldn't be read." });
+        return await SaveAsync(f, Name(body.Name) ?? f.Name, body.Description is null ? f.Description : Desc(body.Description), def, null, ct);
+    }
+
+    /// <summary>
+    /// Saves a definition (an edit, or a restored version): refused while the flow is on and has problems; the apps'
+    /// webhooks kept in step with its trigger; a version kept. → <c>{ flow, errors }</c>.
+    /// </summary>
+    private async Task<IActionResult> SaveAsync(FlowRow f, string name, string? description, FlowDefinition def, string? note, CancellationToken ct)
+    {
+        var (workspaceId, id) = (f.WorkspaceId, f.Id);
         var errors = DefinitionRules.Validate(def, Limits);
         if (f.Enabled && errors.Count > 0)
             return UnprocessableEntity(new { error = "Fix these before saving, or switch the flow off first.", errors });
-        var updated = Shape(f with { Name = Name(body.Name) ?? f.Name, Description = body.Description is null ? f.Description : Desc(body.Description), UpdatedBy = Sub, UpdatedAt = DateTime.UtcNow }, def);
+        var updated = Shape(f with { Name = name, Description = description, UpdatedBy = Sub, UpdatedAt = DateTime.UtcNow }, def);
         await flows.UpdateAsync(updated);
+        var saved = (await flows.GetAsync(workspaceId, id))!;
+        await KeepVersionAsync(saved, note);
         if (f.Enabled)
         {
             // The trigger may now listen elsewhere: keep the apps' webhooks in step.
@@ -86,6 +103,55 @@ public sealed class FlowsController(
         }
         return Ok(new { flow = await DtoAsync((await flows.GetAsync(workspaceId, id))!), errors });
     }
+
+    /// <summary>A copy of the flow as just saved, once db/003 has run (before, nothing is kept and nothing fails).</summary>
+    private async Task KeepVersionAsync(FlowRow saved, string? note)
+    {
+        if (!await schema.VersionsReadyAsync()) return;
+        var def = FlowDefinition.Parse(saved.Definition) ?? new FlowDefinition();
+        await versions.InsertAsync(new FlowVersionRow(saved.WorkspaceId, saved.Id, saved.Version, saved.Name, saved.Definition, def.AllSteps().Count(), note,
+            Sub, DisplayName, DateTime.UtcNow));
+    }
+
+    [HttpGet("api/w/{workspaceId:guid}/flows/{id}/versions")]
+    public async Task<IActionResult> Versions(Guid workspaceId, string id)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.VersionsReadyAsync()) return VersionsNotReady();
+        if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
+        var list = (await versions.ListAsync(workspaceId, id))
+            .Select(v => new FlowVersionDto(v.Version, v.Name, Iso(v.SavedAt), v.SavedByName, v.StepCount, v.Note, v.Version == f.Version)).ToList();
+        // A flow last saved before db/003 ran: the version it is now, though no copy of it was kept.
+        if (!list.Any(v => v.Current))
+            list.Insert(0, new FlowVersionDto(f.Version, f.Name, Iso(f.UpdatedAt), null, (FlowDefinition.Parse(f.Definition) ?? new FlowDefinition()).AllSteps().Count(), null, true));
+        return Ok(list);
+    }
+
+    [HttpGet("api/w/{workspaceId:guid}/flows/{id}/versions/{version:int}")]
+    public async Task<IActionResult> Version(Guid workspaceId, string id, int version)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.VersionsReadyAsync()) return VersionsNotReady();
+        if (await versions.GetAsync(workspaceId, id, version) is not { } v) return NoVersion();
+        var def = FlowDefinition.Parse(v.Definition) ?? new FlowDefinition();
+        return Ok(new FlowVersionDetailDto(v.Version, v.Name, Iso(v.SavedAt), v.SavedByName, v.Note, JsonSerializer.SerializeToNode(def, FlowDefinition.Json)!));
+    }
+
+    [HttpPost("api/w/{workspaceId:guid}/flows/{id}/versions/{version:int}/restore")]
+    public async Task<IActionResult> Restore(Guid workspaceId, string id, int version, CancellationToken ct)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.VersionsReadyAsync()) return VersionsNotReady();
+        if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
+        if (await versions.GetAsync(workspaceId, id, version) is not { } v || FlowDefinition.Parse(v.Definition) is not { } def) return NoVersion();
+        return await SaveAsync(f, v.Name, f.Description, def, $"Restored version {version}", ct);
+    }
+
+    private ObjectResult VersionsNotReady() => StatusCode(503, new { error = "Versions arrive with the next server update.", code = "not_ready" });
+    private NotFoundObjectResult NoVersion() => NotFound(new { error = "That version isn't kept any more.", code = "no_version" });
 
     [HttpPost("api/w/{workspaceId:guid}/flows/{id}/enable")]
     public async Task<IActionResult> Enable(Guid workspaceId, string id, [FromBody] ToggleFlowBody body, CancellationToken ct)
@@ -122,6 +188,7 @@ public sealed class FlowsController(
         if (refusal is not null) return refusal;
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoContent();
         await flows.DeleteAsync(workspaceId, id);
+        if (await schema.VersionsReadyAsync()) await versions.DeleteAsync(workspaceId, id);
         try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
         catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException) { /* tidied on the next change */ }
         return NoContent();
@@ -301,8 +368,8 @@ public sealed class FlowsController(
         foreach (var s in steps)
         {
             if (s.Id == stepId) return loop;
-            foreach (var side in new[] { s.Then, s.Else, s.Do })
-                if (side is not null && LoopAround(side, stepId, s.Type == StepTypes.Loop && side == s.Do ? s : loop) is { } found) return found;
+            foreach (var side in s.Children())
+                if (LoopAround(side, stepId, s.Type == StepTypes.Loop && side == s.Do ? s : loop) is { } found) return found;
         }
         return null;
     }

@@ -30,6 +30,7 @@ public static class FlowCatalog
         E("schedule", "daily", "Every day", ("time", "a time")),
         E("schedule", "weekly", "Every week", ("time", "a time"), ("days", "the days")),
         E("webhook", "catch", "Webhook received"),
+        E("flow", "called", "Called by another flow"),
     ];
 
     public static readonly IReadOnlyList<CatalogEntry> Actions =
@@ -45,6 +46,7 @@ public static class FlowCatalog
         E("projects", "task.comment", "Add comment", ("taskId", "the task"), ("body", "the comment")),
         E("email", "send", "Send email", ("to", "who it goes to"), ("subject", "a subject")),
         E("http", "request", "HTTP request", ("url", "the URL")),
+        E("flow", "run", "Run another flow", ("flowId", "the flow to run")),
     ];
 
     public static CatalogEntry? Trigger(string? app, string? key) => Triggers.FirstOrDefault(t => t.App == app && t.Key == key);
@@ -96,6 +98,11 @@ public static class FlowCatalog
             ["actor"] = "Sample person",
         },
         ("schedule", _) => new JsonObject { ["scheduledFor"] = now.ToString("o"), ["timeZone"] = "UTC" },
+        ("flow", _) => new JsonObject
+        {
+            ["input"] = new JsonObject { ["name"] = "Ada Lovelace", ["email"] = "ada@example.com" },
+            ["caller"] = new JsonObject { ["flowId"] = "flw_sample", ["flowName"] = "Another flow", ["runId"] = "frn_sample", ["depth"] = 1 },
+        },
         _ => new JsonObject { ["body"] = new JsonObject { ["hello"] = "world" }, ["headers"] = new JsonObject() },
     };
 }
