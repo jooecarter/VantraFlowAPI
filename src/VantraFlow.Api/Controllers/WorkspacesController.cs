@@ -20,7 +20,7 @@ namespace VantraFlow.Api.Controllers;
 /// </summary>
 public sealed class WorkspacesController(
     IWorkspaceStore workspaces, IConfiguration config, IWorkspaceAlerts alerts, IWorkspaceFeatures features, IWorkspaceTeardown teardown,
-    ILogger<WorkspacesController> log)
+    ILogger<WorkspacesController> log, SharedWorkspaces? shared = null)
     : FlowControllerBase(workspaces)
 {
     private const string NameError = "Give the workspace a name of 2–80 characters.";
@@ -156,6 +156,8 @@ public sealed class WorkspacesController(
         var looks = lookReady ? await Workspaces.LooksAsync(ids) : new Dictionary<Guid, WorkspaceLook>();
         var counts = await Workspaces.MemberCountsAsync(ids);
         var alertsReady = await features.AlertsReadyAsync();
+        // Shared Vantra workspaces, stage 1: read only, and nothing on the wire changes until a workspace is linked.
+        var links = shared is null ? null : await shared.ForLocalAsync(ids);
         var list = new List<WorkspaceDto>();
         foreach (var (w, role) in rows)
         {
@@ -164,7 +166,8 @@ public sealed class WorkspacesController(
             var look = looks.GetValueOrDefault(w.Id);
             list.Add(new WorkspaceDto(w.Id, w.Name, w.TimeZone, role, w.MonthlyRunQuota ?? limits.MonthlyRuns, runs, emails, limits.EmailsPerDay, alertDefault,
                 lookReady ? look?.Color ?? WorkspaceRules.DefaultColor : null, look?.Logo, counts.GetValueOrDefault(w.Id, 1), Iso(w.CreatedAt),
-                string.Equals(w.OwnerVantraId, Sub, StringComparison.OrdinalIgnoreCase)));
+                string.Equals(w.OwnerVantraId, Sub, StringComparison.OrdinalIgnoreCase),
+                links is null ? null : SharedWorkspaces.Ref(links, w.Id)));
         }
         return list;
     }

@@ -40,6 +40,10 @@ if (string.IsNullOrWhiteSpace(vantraConn) || string.IsNullOrWhiteSpace(flowConn)
         "(appsettings.Development.local.json locally, App Service config in production).");
 builder.Services.AddSingleton(new SqlConnectionFactory(vantraConn, flowConn));
 builder.Services.AddSingleton<FlowSchema>();
+// Shared Vantra workspaces, stage 1: the suite-wide record for a workspace, read from the identity DB (vantra.*,
+// VantraProjectsAPI db/shared/001). Read only; answers nothing until those tables exist and hold a link.
+builder.Services.AddSingleton<ISharedWorkspaceStore, SqlSharedWorkspaceStore>();
+builder.Services.AddSingleton<SharedWorkspaces>();
 builder.Services.AddScoped<FlowReadyFilter>();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<WorkspacesRepository>();

@@ -93,8 +93,13 @@ public static class FlowRoles
 /// <c>Color</c> and <c>Logo</c> are its look (db/005): <c>Color</c> is null until db/005 has run, and the studio then
 /// hides the look and invitations. <c>MemberCount</c>, <c>CreatedAt</c> and <c>IsPrimaryOwner</c> describe it for the switcher.
 /// </summary>
+/// <summary>
+/// A workspace as its member sees it. <c>Shared</c> (<c>{ id }</c>): the suite-wide Vantra workspace it's linked to,
+/// left out when it isn't linked or the shared tables aren't there (<see cref="VantraFlow.Api.Data.SharedWorkspaces"/>).
+/// </summary>
 public sealed record WorkspaceDto(Guid Id, string Name, string TimeZone, string Role, int MonthlyRunQuota, int RunsThisMonth, int EmailsToday, int EmailsPerDay,
-    bool? AlertOnFailure = null, string? Color = null, string? Logo = null, int MemberCount = 0, string? CreatedAt = null, bool IsPrimaryOwner = false);
+    bool? AlertOnFailure = null, string? Color = null, string? Logo = null, int MemberCount = 0, string? CreatedAt = null, bool IsPrimaryOwner = false,
+    VantraFlow.Api.Data.SharedWorkspaceRef? Shared = null);
 
 public sealed record MemberDto(string VantraId, string? Name, string? Email, string Role, string AddedAt);
 
