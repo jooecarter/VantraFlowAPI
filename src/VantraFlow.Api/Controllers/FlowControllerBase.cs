@@ -36,6 +36,9 @@ public abstract class FlowControllerBase(IWorkspaceStore workspaces) : Controlle
     /// <summary>The caller's role in the workspace, or the refusal to return (404: not theirs to see).</summary>
     protected async Task<(string? Role, ActionResult? Refusal)> MemberAsync(Guid workspaceId)
     {
+        // A shared workspace (stage 2): Flow's own list is brought in line with the shared one first when it's due, so
+        // a change made in another Vantra app (someone removed, a role changed) applies here too.
+        if (HttpContext?.RequestServices?.GetService<Shared.SharedSync>() is { } sync) await sync.TouchAsync(workspaceId);
         var role = await workspaces.RoleAsync(workspaceId, Sub);
         return role is null ? (null, NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" })) : (role, null);
     }

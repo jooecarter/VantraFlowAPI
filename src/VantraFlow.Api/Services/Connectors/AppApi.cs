@@ -114,6 +114,13 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
     public Task<AppTwoFactorVerdict> TwoFactorVerifyAsync(string assertion, string code, Guid challengeId, CancellationToken ct) =>
         SendAsync<AppTwoFactorVerdict>(HttpMethod.Post, "/api/integrations/flow/v1/2fa/verify", new { code, challengeId }, null, assertion, ct);
 
+    /// <summary>
+    /// Shared workspaces (stage 2): a call to the app's <c>/api/integrations/shared/v1</c> endpoints as the person
+    /// acting (the assertion). Used for Vantra Projects' seats: it alone checks and gives Projects access.
+    /// </summary>
+    public Task SharedAsync(string assertion, string path, object body, CancellationToken ct) =>
+        SendAsync<bool>(HttpMethod.Post, path, body, null, assertion, ct);
+
     /// <summary>Revokes the connection's key in the app (best effort: Flow forgets it either way).</summary>
     public Task DisconnectAsync(string key, CancellationToken ct) =>
         SendAsync<bool>(HttpMethod.Delete, "/api/integrations/flow/v1/connection", null, key, null, ct);
