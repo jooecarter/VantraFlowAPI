@@ -18,7 +18,7 @@ public sealed record FlowAlertSetting(bool? On, string? To, bool WorkspaceDefaul
 /// they're still in the workspace. At most one email per flow per hour: <see cref="ClaimAsync"/> moves
 /// <c>AlertedAt</c> only when the last one is an hour old, and the failures since then go in that one email.
 /// </summary>
-public sealed class AlertsRepository(SqlConnectionFactory factory)
+public sealed class AlertsRepository(SqlConnectionFactory factory) : IWorkspaceAlerts
 {
     public static readonly TimeSpan Every = TimeSpan.FromHours(1);
     /// <summary>How far back a first alert looks (so switching alerts on never mails old failures).</summary>
@@ -97,4 +97,11 @@ UPDATE flow.Flows SET AlertOnFailure = @On, AlertTo = @To WHERE WorkspaceId = @W
         using var conn = factory.Flow();
         await conn.ExecuteAsync("UPDATE flow.Workspaces SET AlertOnFailure = @On, UpdatedAt = SYSUTCDATETIME() WHERE Id = @Id;", new { Id = workspaceId, On = on });
     }
+}
+
+/// <summary>The workspace's failure-alert default (<see cref="AlertsRepository"/>; a fake in tests). Only once db/002 has run.</summary>
+public interface IWorkspaceAlerts
+{
+    Task<bool> WorkspaceDefaultAsync(Guid workspaceId);
+    Task SetWorkspaceDefaultAsync(Guid workspaceId, bool on);
 }

@@ -9,7 +9,7 @@ namespace VantraFlow.Api.Data;
 /// this repository never touches the product database. Identical to the
 /// other Vantra APIs so one account authenticates across the whole suite.
 /// </summary>
-public sealed class UsersRepository(SqlConnectionFactory factory)
+public sealed class UsersRepository(SqlConnectionFactory factory) : IUserDirectory
 {
     public async Task<UserDetails?> FindByEmailAsync(string email)
     {
@@ -154,4 +154,11 @@ VALUES (@FirstName, @LastName, @Email, @Password, @VantraID);";
             "UPDATE dbo.UserDetails SET VantraID = @VantraID WHERE UserID = @UserID;",
             new { UserID = userId, VantraID = vantraId });
     }
+}
+
+/// <summary>Looking people up in the shared identity database (<see cref="UsersRepository"/>; a fake in tests).</summary>
+public interface IUserDirectory
+{
+    Task<UserDetails?> FindByEmailAsync(string email);
+    Task<UserDetails?> FindByVantraIdAsync(string vantraId);
 }

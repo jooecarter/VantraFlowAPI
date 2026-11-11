@@ -16,7 +16,7 @@ namespace VantraFlow.Api.Controllers;
 [ApiController]
 [Authorize]
 [ServiceFilter(typeof(FlowReadyFilter))]
-public abstract class FlowControllerBase(WorkspacesRepository workspaces) : ControllerBase
+public abstract class FlowControllerBase(IWorkspaceStore workspaces) : ControllerBase
 {
     protected string Sub => User.FindFirstValue("sub") ?? "";
     protected string? Email => User.FindFirstValue("email");
@@ -31,7 +31,7 @@ public abstract class FlowControllerBase(WorkspacesRepository workspaces) : Cont
         }
     }
 
-    protected WorkspacesRepository Workspaces => workspaces;
+    protected IWorkspaceStore Workspaces => workspaces;
 
     /// <summary>The caller's role in the workspace, or the refusal to return (404: not theirs to see).</summary>
     protected async Task<(string? Role, ActionResult? Refusal)> MemberAsync(Guid workspaceId)

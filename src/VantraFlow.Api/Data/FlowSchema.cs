@@ -3,12 +3,12 @@ using Dapper;
 namespace VantraFlow.Api.Data;
 
 /// <summary>
-/// Has db/001 run (and db/002, <see cref="AlertsReadyAsync"/>; db/003, <see cref="VersionsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
+/// Has db/001 run (and db/005, <see cref="InvitesReadyAsync"/>; db/002, <see cref="AlertsReadyAsync"/>; db/003, <see cref="VersionsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
 /// so the API can be deployed before the migration. The probe looks for the index db/001 makes last
 /// (<c>IX_Runs_Due</c>), by name in <c>sys.indexes</c> (never a constraint's definition). A positive answer is
 /// remembered for the life of the process, a negative one for <see cref="NegativeTtl"/>.
 /// </summary>
-public sealed class FlowSchema(SqlConnectionFactory factory)
+public sealed class FlowSchema(SqlConnectionFactory factory) : IWorkspaceFeatures
 {
     public static readonly TimeSpan NegativeTtl = TimeSpan.FromSeconds(30);
 
@@ -29,6 +29,25 @@ SELECT CASE WHEN OBJECT_ID(N'flow.FlowVersions', N'U') IS NOT NULL THEN CAST(1 A
     public const string ConnectorsProbeSql = @"
 SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PollCursors_Due' AND object_id = OBJECT_ID(N'flow.PollCursors'))
             THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    /// <summary>db/005 (the workspace look and invitations): the index it makes last, by name.</summary>
+    public const string InvitesProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Invites_Token' AND object_id = OBJECT_ID(N'flow.Invites'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool invitesReady;
+    private DateTime invitesCheckedAt = DateTime.MinValue;
+
+    /// <summary>Has db/005 run? Until it has, the workspace look and invitations hide themselves (503 <c>not_ready</c>).</summary>
+    public async Task<bool> InvitesReadyAsync()
+    {
+        if (invitesReady) return true;
+        if (DateTime.UtcNow - invitesCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        invitesReady = await conn.ExecuteScalarAsync<bool>(InvitesProbeSql);
+        invitesCheckedAt = DateTime.UtcNow;
+        return invitesReady;
+    }
 
     private volatile bool connectorsReady;
     private DateTime connectorsCheckedAt = DateTime.MinValue;
@@ -83,4 +102,13 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PollCursors
         checkedAt = DateTime.UtcNow;
         return ready;
     }
+}
+
+/// <summary>Which of the later migrations the workspace endpoints can count on (<see cref="FlowSchema"/>; a fake in tests).</summary>
+public interface IWorkspaceFeatures
+{
+    /// <summary>db/002: failure alerts.</summary>
+    Task<bool> AlertsReadyAsync();
+    /// <summary>db/005: the workspace look and invitations.</summary>
+    Task<bool> InvitesReadyAsync();
 }

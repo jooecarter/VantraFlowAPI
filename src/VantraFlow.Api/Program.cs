@@ -13,6 +13,7 @@ using VantraFlow.Api.Services.Auth;
 using VantraFlow.Api.Services.Connectors;
 using VantraFlow.Api.Services.Engine;
 using VantraFlow.Api.Services.OAuth;
+using VantraFlow.Api.Services.Workspaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -42,10 +43,18 @@ builder.Services.AddSingleton<FlowSchema>();
 builder.Services.AddScoped<FlowReadyFilter>();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<WorkspacesRepository>();
+builder.Services.AddScoped<IWorkspaceStore>(sp => sp.GetRequiredService<WorkspacesRepository>());
+builder.Services.AddSingleton<IWorkspaceFeatures>(sp => sp.GetRequiredService<FlowSchema>());
+builder.Services.AddScoped<IUserDirectory>(sp => sp.GetRequiredService<UsersRepository>());
 builder.Services.AddScoped<FlowsRepository>();
 builder.Services.AddScoped<ConnectionsRepository>();
 builder.Services.AddScoped<EngineRepository>();
 builder.Services.AddScoped<AlertsRepository>();
+builder.Services.AddScoped<IWorkspaceAlerts>(sp => sp.GetRequiredService<AlertsRepository>());
+// Workspaces as a whole: invitations (db/005), their emails, and what deleting one undoes outside Flow.
+builder.Services.AddScoped<IInviteStore, InvitesRepository>();
+builder.Services.AddScoped<IWorkspaceMail, WorkspaceMail>();
+builder.Services.AddScoped<IWorkspaceTeardown, WorkspaceTeardown>();
 builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
 
@@ -117,6 +126,14 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(AuthController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
+    // Inviting and adding people: 30 a minute per person (each workspace also has its daily cap).
+    o.AddPolicy(MembersController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+    // Opening and accepting invitation links: 30 a minute per address.
+    o.AddPolicy(InviteAcceptController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
     // Webhook triggers and app events: 300 a minute per address and path.
     o.AddPolicy(IncomingController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") + ctx.Request.Path,
