@@ -13,7 +13,8 @@ public interface IWorkspaceStore
     /// <summary>The person's role in the workspace, or null when they aren't in it.</summary>
     Task<string?> RoleAsync(Guid workspaceId, string vantraId);
     /// <summary>A new workspace with its creator as owner; <paramref name="look"/> only once db/005 has run.</summary>
-    Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null);
+    /// <summary>Stage 3: <paramref name="withId"/> is a shared workspace's id, when Flow is added to one.</summary>
+    Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null, Guid? withId = null);
     /// <summary>How many workspaces the person is the primary owner of.</summary>
     Task<int> OwnedCountAsync(string vantraId);
     Task UpdateAsync(Guid id, string name, string timeZone);
@@ -73,9 +74,9 @@ ORDER BY w.CreatedAt;", (w, role) => (w, role), new { VantraId = vantraId }, spl
             new { WorkspaceId = workspaceId, VantraId = vantraId });
     }
 
-    public async Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null)
+    public async Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null, Guid? withId = null)
     {
-        var id = Guid.NewGuid();
+        var id = withId ?? Guid.NewGuid();
         using var conn = factory.Flow();
         var insert = look is null
             ? "INSERT INTO flow.Workspaces (Id, Name, TimeZone, OwnerVantraId) VALUES (@Id, @Name, @TimeZone, @Owner);"

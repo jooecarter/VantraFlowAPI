@@ -37,9 +37,17 @@ public sealed class FakeWorkspaces : IWorkspaceStore, IInviteStore
             .Select(kv => (Rows[kv.Key], kv.Value.First(m => m.VantraId == vantraId).Role)).ToList());
     public Task<WorkspaceRow?> GetAsync(Guid id) => Task.FromResult(Rows.GetValueOrDefault(id));
     public Task<string?> RoleAsync(Guid workspaceId, string vantraId) => Task.FromResult(RoleOf(workspaceId, vantraId));
-    public Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null)
+    public Task<WorkspaceRow> CreateAsync(string name, string timeZone, string ownerVantraId, string? email, string? ownerName, WorkspaceLook? look = null, Guid? withId = null)
     {
         var id = Add(name, (ownerVantraId, FlowRoles.Owner));
+        if (withId is { } wanted)
+        {
+            Rows[wanted] = Rows[id] with { Id = wanted };
+            Members[wanted] = Members[id].Select(m => m with { WorkspaceId = wanted }).ToList();
+            Rows.Remove(id);
+            Members.Remove(id);
+            id = wanted;
+        }
         Rows[id] = Rows[id] with { TimeZone = timeZone };
         if (look is not null) Looks[id] = look with { WorkspaceId = id };
         Log.Add($"create:{name}");

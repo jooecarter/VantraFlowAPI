@@ -51,6 +51,10 @@ builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedMirror, VantraFlow.Ap
 builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedSync>();
 builder.Services.AddScoped<VantraFlow.Api.Shared.ISharedHost, VantraFlow.Api.Shared.FlowSharedHost>();
 builder.Services.AddScoped<VantraFlow.Api.Shared.SharedTeam>();
+// Shared Vantra workspaces, stage 3: one workspace everywhere (create, link on first sight, switch apps on and off).
+builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedDirectory, VantraFlow.Api.Shared.SqlSharedDirectory>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedSpaces>();
+builder.Services.AddScoped<VantraFlow.Api.Shared.FlowSpaces>();
 builder.Services.AddScoped<FlowReadyFilter>();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<WorkspacesRepository>();

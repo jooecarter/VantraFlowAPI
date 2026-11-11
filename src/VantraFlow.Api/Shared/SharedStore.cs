@@ -71,7 +71,8 @@ SELECT CASE WHEN OBJECT_ID(N'vantra.Workspaces', N'U') IS NOT NULL
     public const int ChunkSize = 500;
 
     private const string InviteCols = @"i.Id, i.WorkspaceId, i.Email, i.Role, i.GuestType, i.Status, i.InvitedByVantraId, i.InvitedFromApp,
-       i.CreatedAt, i.SentAt, i.ExpiresAt, i.AcceptedByVantraId, w.Name AS WorkspaceName, w.Color AS WorkspaceColor, w.Logo AS WorkspaceLogo";
+       i.CreatedAt, i.SentAt, i.ExpiresAt, i.AcceptedByVantraId, w.Name AS WorkspaceName, w.Color AS WorkspaceColor,
+       CASE WHEN w.Logo = N'data:image/none,' THEN NULL ELSE w.Logo END AS WorkspaceLogo";
 
     public const string StateSql = @"
 SELECT w.Id, w.Name, w.OwnerVantraId FROM vantra.Workspaces w WITH (UPDLOCK, HOLDLOCK) WHERE w.Id = @Id;
