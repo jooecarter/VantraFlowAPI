@@ -65,6 +65,34 @@ public static class Positions
         return side is { Count: > 0 } ? $"{branchPath}.{(then ? "t" : "e")}.0" : After(def, branchPath);
     }
 
+    /// <summary>
+    /// Down a paths step's path (<paramref name="index"/>, from 0), its "otherwise" (<c>-1</c>), or past it (null, or a
+    /// side with no steps).
+    /// </summary>
+    public static string? EnterPath(FlowDefinition def, string pathsPath, int? index)
+    {
+        var step = StepAt(def, pathsPath);
+        var side = index switch
+        {
+            null => null,
+            -1 => step?.Else,
+            { } i => step?.Paths is { } ps && i >= 0 && i < ps.Count ? ps[i].Steps : null,
+        };
+        if (side is not { Count: > 0 }) return After(def, pathsPath);
+        return index == -1 ? $"{pathsPath}.e.0" : $"{pathsPath}.p{index}.0";
+    }
+
+    private static List<StepDef>? Side(StepDef step, string side) => side switch
+    {
+        "t" => step.Then ?? [],
+        "e" => step.Else ?? [],
+        "d" => step.Do ?? [],
+        _ when side.Length > 1 && side[0] == 'p'
+               && int.TryParse(side.AsSpan(1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var p)
+               && step.Paths is { } paths && p < paths.Count => paths[p].Steps ?? [],
+        _ => null,
+    };
+
     private static (List<StepDef>? List, int Index) Locate(FlowDefinition def, string path)
     {
         var parts = path.Split('.');
@@ -75,8 +103,9 @@ public static class Positions
             if (i == parts.Length - 1) return (list, idx);
             if (idx >= list.Count || i + 1 >= parts.Length - 1) return (null, -1);
             var step = list[idx];
-            list = parts[i + 1] switch { "t" => step.Then ?? [], "e" => step.Else ?? [], "d" => step.Do ?? [], _ => null! };
-            if (list is null) return (null, -1);
+            var side = Side(step, parts[i + 1]);
+            if (side is null) return (null, -1);
+            list = side;
             i++;
         }
         return (null, -1);

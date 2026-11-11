@@ -3,7 +3,7 @@ using Dapper;
 namespace VantraFlow.Api.Data;
 
 /// <summary>
-/// Has db/001 run (and db/002, <see cref="AlertsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
+/// Has db/001 run (and db/002, <see cref="AlertsReadyAsync"/>; db/003, <see cref="VersionsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
 /// so the API can be deployed before the migration. The probe looks for the index db/001 makes last
 /// (<c>IX_Runs_Due</c>), by name in <c>sys.indexes</c> (never a constraint's definition). A positive answer is
 /// remembered for the life of the process, a negative one for <see cref="NegativeTtl"/>.
@@ -20,6 +20,24 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Runs_Due' A
     public const string AlertsProbeSql = @"
 SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'flow.Flows') AND name = N'AlertedAt')
             THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    /// <summary>db/003 (versions): its table, by name.</summary>
+    public const string VersionsProbeSql = @"
+SELECT CASE WHEN OBJECT_ID(N'flow.FlowVersions', N'U') IS NOT NULL THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool versionsReady;
+    private DateTime versionsCheckedAt = DateTime.MinValue;
+
+    /// <summary>Has db/003 run? Until it has, saves keep no versions and the version list hides itself.</summary>
+    public async Task<bool> VersionsReadyAsync()
+    {
+        if (versionsReady) return true;
+        if (DateTime.UtcNow - versionsCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        versionsReady = await conn.ExecuteScalarAsync<bool>(VersionsProbeSql);
+        versionsCheckedAt = DateTime.UtcNow;
+        return versionsReady;
+    }
 
     private volatile bool ready;
     private DateTime checkedAt = DateTime.MinValue;

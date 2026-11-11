@@ -21,6 +21,11 @@ public sealed record FlowRow(
     string TriggerApp, string TriggerEvent, string? TriggerScope, string? HookId, byte[]? HookSecretCipher, string? TemplateId,
     string? PausedReason, string CreatedBy, DateTime CreatedAt, string UpdatedBy, DateTime UpdatedAt, DateTime? LastRunAt, string? LastRunStatus);
 
+/// <summary>A saved version of a flow (db/003).</summary>
+public sealed record FlowVersionRow(
+    Guid WorkspaceId, string FlowId, int Version, string Name, string Definition, int StepCount, string? Note, string SavedBy, string? SavedByName,
+    DateTime SavedAt);
+
 public sealed record FlowStatsRow(string FlowId, int Runs, int Failures);
 
 /// <summary>A flow's runs and failures on one day (UTC), for the list's sparkline.</summary>
@@ -103,7 +108,13 @@ public sealed record FlowAlertsDto(bool On, bool? Own, bool WorkspaceDefault, st
 
 public sealed record RunSummaryDto(
     string Id, string FlowId, string FlowName, string Status, bool Test, string? ReplayOf, string StartedAt, string? FinishedAt,
-    int? DurationMs, string? Error, int StepCount, string? NextAt);
+    int? DurationMs, string? Error, int StepCount, string? NextAt, int? FlowVersion = null);
+
+/// <summary>A saved version in the list: <c>Current</c> is the flow as it is now.</summary>
+public sealed record FlowVersionDto(int Version, string Name, string SavedAt, string? SavedByName, int StepCount, string? Note, bool Current);
+
+/// <summary>One version, with what it was.</summary>
+public sealed record FlowVersionDetailDto(int Version, string Name, string SavedAt, string? SavedByName, string? Note, JsonNode Definition);
 
 public sealed record RunStepDto(
     int Seq, string StepId, string Type, string? App, string? Action, string Name, string Status, int Attempt,

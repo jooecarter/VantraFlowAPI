@@ -33,15 +33,19 @@ public sealed class FlowDefinition
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
 
-    /// <summary>Every step, depth first in the order they run (a branch, then its "then" side, then its "else"; a loop, then the steps it repeats).</summary>
+    /// <summary>
+    /// Every step, depth first in the order they run (a branch, then its "then" side, then its "else"; paths, each
+    /// path's steps in turn, then "otherwise"; a loop, then the steps it repeats).
+    /// </summary>
     public IEnumerable<StepDef> AllSteps() => Walk(Steps);
 
-    private static IEnumerable<StepDef> Walk(IEnumerable<StepDef> steps)
+    public static IEnumerable<StepDef> Walk(IEnumerable<StepDef> steps)
     {
         foreach (var s in steps)
         {
             yield return s;
             if (s.Then is not null) foreach (var t in Walk(s.Then)) yield return t;
+            if (s.Paths is not null) foreach (var p in s.Paths) foreach (var x in Walk(p.Steps)) yield return x;
             if (s.Else is not null) foreach (var e in Walk(s.Else)) yield return e;
             if (s.Do is not null) foreach (var d in Walk(s.Do)) yield return d;
         }
@@ -50,7 +54,7 @@ public sealed class FlowDefinition
 
 public sealed class TriggerDef
 {
-    /// <summary><c>orbit</c>, <c>projects</c>, <c>schedule</c> or <c>webhook</c>.</summary>
+    /// <summary><c>orbit</c>, <c>projects</c>, <c>schedule</c>, <c>webhook</c> or <c>flow</c> (called by another flow).</summary>
     public string App { get; set; } = "";
     /// <summary>The app's event, e.g. <c>record.created</c> (<see cref="FlowCatalog.Triggers"/>).</summary>
     public string Event { get; set; } = "";
@@ -60,17 +64,40 @@ public sealed class TriggerDef
 public sealed class StepDef
 {
     public string Id { get; set; } = "";
-    /// <summary><c>action</c>, <c>delay</c>, <c>branch</c> or <c>loop</c> ("Repeat for each").</summary>
+    /// <summary>
+    /// <c>action</c>, <c>delay</c>, <c>branch</c> (if / else), <c>paths</c>, <c>loop</c> ("Repeat for each"),
+    /// <c>filter</c> ("Only continue if"), <c>formatter</c> or <c>variable</c> (<see cref="StepTypes"/>).
+    /// </summary>
     public string Type { get; set; } = StepTypes.Action;
     public string? App { get; set; }
     public string? Action { get; set; }
     public string? Name { get; set; }
     public JsonObject Config { get; set; } = new();
     public List<StepDef>? Then { get; set; }
+    /// <summary>An if / else's "otherwise" side, and a paths step's "otherwise" path.</summary>
     public List<StepDef>? Else { get; set; }
+    /// <summary>A paths step's paths, tried top to bottom (<see cref="PathRules"/>).</summary>
+    public List<PathDef>? Paths { get; set; }
     /// <summary>A loop's steps, run once for each item (<see cref="LoopRules"/>).</summary>
     public List<StepDef>? Do { get; set; }
     public RetryDef? Retry { get; set; }
+
+    /// <summary>The lists of steps inside this one: a branch's sides, each path and "otherwise", a loop's steps.</summary>
+    public IEnumerable<List<StepDef>> Children()
+    {
+        if (Then is not null) yield return Then;
+        if (Paths is not null) foreach (var p in Paths) if (p.Steps is not null) yield return p.Steps;
+        if (Else is not null) yield return Else;
+        if (Do is not null) yield return Do;
+    }
+}
+
+/// <summary>One of a paths step's paths: its name, the condition that sends a run down it, and its steps.</summary>
+public sealed class PathDef
+{
+    public string? Name { get; set; }
+    public JsonObject? Condition { get; set; }
+    public List<StepDef> Steps { get; set; } = [];
 }
 
 /// <summary>How often a failed action is tried again, and the first wait (it doubles each time).</summary>
@@ -90,12 +117,44 @@ public sealed class FlowOptions
     public bool RunOnFlowChanges { get; set; }
 }
 
+/// <summary>
+/// "Run another flow": a step starts a flow whose trigger is "Called by another flow", handing it <c>input</c> (its
+/// <c>{{trigger.input…}}</c>) and who called (<c>{{trigger.caller…}}</c>). It doesn't wait for that run. Flows can call
+/// each other at most <see cref="MaxDepth"/> deep, so a flow that calls itself stops.
+/// </summary>
+public static class SubFlowRules
+{
+    public const int MaxDepth = 3;
+
+    /// <summary>How deep a run is: 0 for one an app, a schedule or a webhook started; its caller's + 1 for a called one.</summary>
+    public static int DepthOf(JsonNode? data) =>
+        Tokens.Resolve(data, "trigger.caller.depth") is JsonValue v && v.TryGetValue<int>(out var d) ? Math.Max(0, d) : 0;
+}
+
 public static class StepTypes
 {
     public const string Action = "action";
     public const string Delay = "delay";
     public const string Branch = "branch";
     public const string Loop = "loop";
+    public const string Paths = "paths";
+    public const string Filter = "filter";
+    public const string Formatter = "formatter";
+    public const string Variable = "variable";
+}
+
+/// <summary>
+/// Paths: up to <see cref="MaxPaths"/> paths, each with its own condition, tried top to bottom; the run goes down the
+/// first that holds, else down "otherwise" (the step's <c>else</c>) when <c>config.otherwise</c> is on, else on past
+/// the step. If / else is the two-path case and keeps its own shape, so existing flows run as they did.
+/// </summary>
+public static class PathRules
+{
+    public const int MaxPaths = 5;
+
+    public static bool HasOtherwise(StepDef s) => s.Config["otherwise"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
+    public static string NameOf(PathDef p, int index) => p.Name?.Trim() is { Length: > 0 } n ? n : $"Path {index + 1}";
 }
 
 /// <summary>
@@ -209,18 +268,24 @@ public static partial class DefinitionRules
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var earlier = new List<string>();
-        CheckList(def.Steps, 1, errors, seen, earlier, limits, false);
+        var vars = VariableRules.Names(def);
+        CheckList(def.Steps, 1, errors, seen, earlier, limits, false, vars);
         return errors;
     }
 
-    private static void CheckList(List<StepDef> steps, int depth, List<DefinitionError> errors, HashSet<string> seen, List<string> earlier, FlowLimits limits, bool inLoop)
+    /// <summary>Every token path a step reads: its config's, and its paths' conditions.</summary>
+    public static IEnumerable<string> ReferencesOf(StepDef s) =>
+        Tokens.References(s.Config).Concat((s.Paths ?? []).SelectMany(p => Tokens.References(p.Condition)));
+
+    private static void CheckList(List<StepDef> steps, int depth, List<DefinitionError> errors, HashSet<string> seen, List<string> earlier, FlowLimits limits, bool inLoop,
+        IReadOnlySet<string> vars)
     {
         foreach (var s in steps)
         {
             if (!StepId().IsMatch(s.Id)) errors.Add(new(s.Id, "A step's id must be short lower-case letters and numbers."));
             else if (!seen.Add(s.Id)) errors.Add(new(s.Id, "Two steps share this id."));
 
-            foreach (var token in Tokens.References(s.Config))
+            foreach (var token in ReferencesOf(s))
                 if (token.StartsWith("steps.", StringComparison.Ordinal))
                 {
                     var id = token.Split('.')[1];
@@ -228,6 +293,8 @@ public static partial class DefinitionRules
                 }
                 else if ((token == "loop" || token.StartsWith("loop.", StringComparison.Ordinal)) && (!inLoop || s.Type == StepTypes.Loop))
                     errors.Add(new(s.Id, $"{{{{{token}}}}} is only there inside a Repeat for each."));
+                else if (token.StartsWith("vars.", StringComparison.Ordinal) && !vars.Contains(token.Split('.')[1]))
+                    errors.Add(new(s.Id, $"{{{{{token}}}}} isn't set by a Set variable step."));
 
             switch (s.Type)
             {
@@ -243,18 +310,33 @@ public static partial class DefinitionRules
                     if (DelayOf(s.Config) is not { } d) errors.Add(new(s.Id, "Set how long to wait."));
                     else if (d > FlowLimits.MaxDelay) errors.Add(new(s.Id, "A delay can be at most 30 days."));
                     break;
+                case StepTypes.Filter:
+                    if (Conditions.Parse(s.Config["condition"]) is not { } fc || fc.Count == 0) errors.Add(new(s.Id, "Add a condition."));
+                    break;
+                case StepTypes.Formatter:
+                    if (Formatter.Check(s.Config) is { } why) errors.Add(new(s.Id, why));
+                    break;
+                case StepTypes.Variable:
+                    errors.AddRange(VariableRules.Check(s.Config).Select(m => new DefinitionError(s.Id, m)));
+                    break;
                 case StepTypes.Branch:
                     if (depth >= limits.MaxDepth) errors.Add(new(s.Id, $"Branches can be nested {limits.MaxDepth - 1} deep at most."));
-                    if (Conditions.Parse(s.Config["condition"]) is not { Rules.Count: > 0 }) errors.Add(new(s.Id, "Add a condition."));
+                    if (Conditions.Parse(s.Config["condition"]) is not { } bc || bc.Count == 0) errors.Add(new(s.Id, "Add a condition."));
                     earlier.Add(s.Id);
-                    var before = earlier.Count;
-                    CheckList(s.Then ??= [], depth + 1, errors, seen, earlier, limits, inLoop);
-                    // The else side can't see the then side's outputs.
-                    var thenIds = earlier.Skip(before).ToList();
-                    earlier.RemoveRange(before, earlier.Count - before);
-                    CheckList(s.Else ??= [], depth + 1, errors, seen, earlier, limits, inLoop);
-                    // After the branch, either side's outputs may be there (or empty): allow both.
-                    earlier.AddRange(thenIds);
+                    Sides(s, [s.Then ??= [], s.Else ??= []], depth, errors, seen, earlier, limits, inLoop, vars);
+                    continue;
+                case StepTypes.Paths:
+                    if (depth >= limits.MaxDepth) errors.Add(new(s.Id, $"Paths can be nested {limits.MaxDepth - 1} deep at most."));
+                    var paths = s.Paths ??= [];
+                    if (paths.Count == 0) errors.Add(new(s.Id, "Add a path."));
+                    if (paths.Count > PathRules.MaxPaths) errors.Add(new(s.Id, $"A step can have at most {PathRules.MaxPaths} paths."));
+                    for (var i = 0; i < paths.Count; i++)
+                        if (Conditions.Parse(paths[i].Condition) is not { } pc || pc.Count == 0)
+                            errors.Add(new(s.Id, $"{PathRules.NameOf(paths[i], i)} needs a condition."));
+                    earlier.Add(s.Id);
+                    var sides = paths.Select(p => p.Steps ??= []).ToList();
+                    if (PathRules.HasOtherwise(s)) sides.Add(s.Else ??= []);
+                    Sides(s, sides, depth, errors, seen, earlier, limits, inLoop, vars);
                     continue;
                 case StepTypes.Loop:
                     if (inLoop) errors.Add(new(s.Id, "A Repeat for each can't be inside another."));
@@ -266,7 +348,7 @@ public static partial class DefinitionRules
                         errors.Add(new(s.Id, $"Go through 1 to {LoopRules.MaxItems} items."));
                     if (s.Do is not { Count: > 0 }) errors.Add(new(s.Id, "Add a step to repeat."));
                     earlier.Add(s.Id);
-                    CheckList(s.Do ??= [], depth + 1, errors, seen, earlier, limits, true);
+                    CheckList(s.Do ??= [], depth + 1, errors, seen, earlier, limits, true, vars);
                     continue;
                 default:
                     errors.Add(new(s.Id, "Unknown step."));
@@ -274,6 +356,24 @@ public static partial class DefinitionRules
             }
             earlier.Add(s.Id);
         }
+    }
+
+    /// <summary>
+    /// A branch's or paths step's sides: each sees the steps before the step (and the step itself), not its sibling
+    /// sides; the steps after it may use any side's outputs (empty when that side didn't run).
+    /// </summary>
+    private static void Sides(StepDef s, List<List<StepDef>> sides, int depth, List<DefinitionError> errors, HashSet<string> seen, List<string> earlier,
+        FlowLimits limits, bool inLoop, IReadOnlySet<string> vars)
+    {
+        var before = earlier.Count;
+        var made = new List<string>();
+        foreach (var side in sides)
+        {
+            CheckList(side, depth + 1, errors, seen, earlier, limits, inLoop, vars);
+            made.AddRange(earlier.Skip(before));
+            earlier.RemoveRange(before, earlier.Count - before);
+        }
+        earlier.AddRange(made);
     }
 
     public static bool Empty(JsonNode? n) => n switch

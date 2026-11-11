@@ -45,6 +45,7 @@ builder.Services.AddScoped<FlowsRepository>();
 builder.Services.AddScoped<ConnectionsRepository>();
 builder.Services.AddScoped<EngineRepository>();
 builder.Services.AddScoped<AlertsRepository>();
+builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
 
 // ── Identity ─────────────────────────────────────────────────────────────

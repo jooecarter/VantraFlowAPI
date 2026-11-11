@@ -66,7 +66,7 @@ public static class TriggerMatcher
     /// <summary>"Record matches": the condition holds now and didn't before this change (a new record: just now).</summary>
     public static bool BecameTrue(TriggerDef t, JsonObject data)
     {
-        if (Conditions.Parse(t.Config["condition"]) is not { Rules.Count: > 0 } cond) return false;
+        if (Conditions.Parse(t.Config["condition"]) is not { Count: > 0 } cond) return false;
         if (!Conditions.Evaluate(cond, new JsonObject { ["trigger"] = data.DeepClone() })) return false;
         if (data["changes"] is not JsonArray { Count: > 0 } changes) return Tokens.Text(data["event"]) != "record.updated";
         // The record as it was: this change's "from" values over its fields now.

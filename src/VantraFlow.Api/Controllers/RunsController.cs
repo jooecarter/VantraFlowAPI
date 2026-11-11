@@ -82,7 +82,8 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
 
     public static RunSummaryDto Summary(RunRow r) =>
         new(r.Id, r.FlowId, r.FlowName, r.Status, r.Test, r.ReplayOf, Iso(r.StartedAt), Iso(r.FinishedAt), r.DurationMs, r.Error, r.StepCount,
-            r.Status is RunStatuses.Waiting or RunStatuses.Queued && r.NotBefore > DateTime.UtcNow ? Iso(r.NotBefore) : null);
+            r.Status is RunStatuses.Waiting or RunStatuses.Queued && r.NotBefore > DateTime.UtcNow ? Iso(r.NotBefore) : null,
+            r.Test ? null : r.FlowVersion); // a test runs the builder's unsaved copy
 
     private static JsonNode? Parse(string? json)
     {
