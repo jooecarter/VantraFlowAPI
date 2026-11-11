@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using VantraFlow.Api.Data;
 using VantraFlow.Api.Models;
 using VantraFlow.Api.Services.Workspaces;
+using VantraFlow.Api.Shared;
 
 namespace VantraFlow.Api.Controllers;
 
@@ -22,7 +23,8 @@ namespace VantraFlow.Api.Controllers;
 [ApiController]
 [Authorize]
 [ServiceFilter(typeof(FlowReadyFilter))]
-public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory users, IWorkspaceFeatures features, ILogger<InviteAcceptController> log)
+public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory users, IWorkspaceFeatures features, ILogger<InviteAcceptController> log,
+    SharedMembers? shared = null, SharedTeam? team = null)
     : ControllerBase
 {
     public const string RateLimitPolicy = "invite-links";
@@ -35,7 +37,8 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
         if (!await features.InvitesReadyAsync()) return NotReady();
         if (!InviteRules.IsTokenShape(body?.Token)) return Invalid();
         var r = await invites.FindByTokenAsync(InviteRules.Hash(body!.Token!));
-        if (r is null) return Invalid();
+        // Not one of Flow's own: a shared Vantra invitation (stage 2), from any app, with the apps it gives.
+        if (r is null) return team is null ? Invalid() : Answer(await team.PreviewAsync(body.Token));
         return InviteRules.Preview(r.Status, r.ExpiresAt, DateTime.UtcNow) switch
         {
             InviteOutcome.Accept => Ok(new InvitePreviewDto(r.WorkspaceName ?? "", ColorOf(r), r.WorkspaceLogo, r.Role, r.InvitedByName,
@@ -54,7 +57,22 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
         var me = await users.FindByVantraIdAsync(sub);
         var email = !string.IsNullOrWhiteSpace(me?.Email) ? me.Email : User.FindFirstValue("email");
         var name = me is null ? null : $"{me.FirstName} {me.LastName}".Trim() is { Length: > 0 } n ? n : null;
-        var result = await invites.AcceptAsync(InviteRules.Hash(body!.Token!), sub, email, name);
+        var hash = InviteRules.Hash(body!.Token!);
+        if (team is not null && shared is not null)
+        {
+            var own = await invites.FindByTokenAsync(hash);
+            if (own is null)
+            {
+                // A shared Vantra invitation: joined with the apps it gives. Flow opens its workspace when Flow is one of them.
+                var (answer, after) = await team.AcceptAsync(body.Token, sub, email);
+                if (!answer.Ok) return Answer(answer);
+                var dto = (SharedAcceptDto)answer.Body!;
+                var flowId = after?.Find(sub)?.Has(SharedApps.Flow) == true ? after.LocalId(SharedApps.Flow) : null;
+                return Ok(new { workspaceId = flowId?.ToString(), workspaceName = dto.WorkspaceName, alreadyMember = dto.AlreadyMember, apps = dto.Apps });
+            }
+            if (await JoinSharedFirstAsync(own, sub, email) is { } refused) return refused;
+        }
+        var result = await invites.AcceptAsync(hash, sub, email, name);
         if (result is not { } r) return Invalid();
         var ws = r.Invite.WorkspaceName ?? "";
         switch (r.Outcome)
@@ -74,6 +92,30 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
                 return Closed(r.Outcome, r.Invite);
         }
     }
+
+    /// <summary>
+    /// One of Flow's own invitations to a workspace whose members are now shared: the person joins the shared record
+    /// first (with Flow), so Flow's own list never holds someone the shared one doesn't. Null to carry on.
+    /// </summary>
+    private async Task<IActionResult?> JoinSharedFirstAsync(InviteRow own, string sub, string? email)
+    {
+        try
+        {
+            if (await shared!.ForLocalAsync(SharedApps.Flow, own.WorkspaceId, strict: true) is not { } state) return null;
+            if (InviteRules.Evaluate(own.Status, own.ExpiresAt, DateTime.UtcNow, own.Email, email, state.Find(sub)?.Has(SharedApps.Flow) == true)
+                != InviteOutcome.Accept) return null;
+            var role = own.Role == FlowRoles.Admin ? SharedRoles.Admin : SharedRoles.Member;
+            // The shared record only: Flow's own row is the invitation's to add, below, as it always has been.
+            await shared.Store.ApplyAsync(state.WorkspaceId, sub, "invite", s => SharedRules.Join(s, sub, role, null, [SharedApps.Flow]));
+            return null;
+        }
+        catch (Exception e) when (e is SharedUnavailableException or Microsoft.Data.SqlClient.SqlException)
+        {
+            return StatusCode(503, new { error = "The shared workspace couldn't be reached. Try again.", code = SharedCodes.Unavailable });
+        }
+    }
+
+    private IActionResult Answer(SharedResult r) => r.Body is null ? StatusCode(r.Status) : StatusCode(r.Status, r.Body);
 
     private ObjectResult Closed(InviteOutcome outcome, InviteRow r)
     {

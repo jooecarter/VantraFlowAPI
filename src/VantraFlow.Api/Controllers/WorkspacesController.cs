@@ -3,6 +3,7 @@ using VantraFlow.Api.Data;
 using VantraFlow.Api.Models;
 using VantraFlow.Api.Services.Engine;
 using VantraFlow.Api.Services.Workspaces;
+using VantraFlow.Api.Shared;
 
 namespace VantraFlow.Api.Controllers;
 
@@ -20,14 +21,36 @@ namespace VantraFlow.Api.Controllers;
 /// </summary>
 public sealed class WorkspacesController(
     IWorkspaceStore workspaces, IConfiguration config, IWorkspaceAlerts alerts, IWorkspaceFeatures features, IWorkspaceTeardown teardown,
-    ILogger<WorkspacesController> log, SharedWorkspaces? shared = null)
+    ILogger<WorkspacesController> log, SharedWorkspaces? shared = null, SharedMembers? sharedMembers = null, SharedSync? sync = null,
+    SharedTeam? team = null)
     : FlowControllerBase(workspaces)
 {
+    /// <summary>
+    /// A shared workspace (stage 2): leaving and handing over are the shared record's, under the shared rules. Null when
+    /// this workspace's members aren't shared, so Flow's own rules apply as before.
+    /// </summary>
+    private async Task<IActionResult?> SharedAsync(Guid workspaceId, Func<SharedState, SharedActor, Task<SharedResult>> act)
+    {
+        if (sharedMembers is null || team is null) return null;
+        try
+        {
+            if (await sharedMembers.ForLocalAsync(SharedApps.Flow, workspaceId, strict: true) is not { } state) return null;
+            var r = await act(state, new SharedActor(Sub, DisplayName, Email));
+            return r.Body is null ? StatusCode(r.Status) : StatusCode(r.Status, r.Body);
+        }
+        catch (Exception e) when (e is SharedUnavailableException or Microsoft.Data.SqlClient.SqlException)
+        {
+            return StatusCode(503, new { error = "The shared workspace couldn't be reached. Nothing was changed. Try again.", code = SharedCodes.Unavailable });
+        }
+    }
+
     private const string NameError = "Give the workspace a name of 2–80 characters.";
 
     [HttpGet("api/workspaces")]
     public async Task<ActionResult<IReadOnlyList<WorkspaceDto>>> List()
     {
+        // Shared workspaces (stage 2): joined, left or changed in another Vantra app since? Flow's own list catches up first.
+        if (sync is not null) await sync.UserAsync(Sub);
         var mine = await Workspaces.ForUserAsync(Sub);
         if (mine.Count == 0)
         {
@@ -95,6 +118,7 @@ public sealed class WorkspacesController(
     {
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (await SharedAsync(workspaceId, (st, actor) => team!.LeaveAsync(st, actor)) is { } sharedAnswer) return sharedAnswer;
         var plan = await Workspaces.ApplyAsync(workspaceId, s => WorkspaceRules.Leave(s, Sub));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
         if (plan.Ok) return NoContent();
@@ -111,6 +135,7 @@ public sealed class WorkspacesController(
         if (refusal is not null) return refusal;
         if (!WorkspaceRules.CanTransfer(role)) return Refuse(WorkspaceCodes.OwnerOnly, "Only an owner can hand the workspace over.");
         if (string.IsNullOrWhiteSpace(body?.VantraId)) return BadRequest(new { error = "Choose who to hand it to." });
+        if (await SharedAsync(workspaceId, (st, actor) => team!.TransferAsync(st, actor, body.VantraId)) is { } sharedAnswer) return sharedAnswer;
         var plan = await Workspaces.ApplyAsync(workspaceId, s => WorkspaceRules.Transfer(s, Sub, body.VantraId));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
         if (plan.Ok) return NoContent();

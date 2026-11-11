@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using VantraFlow.Api.Data;
 using VantraFlow.Api.Models;
 using VantraFlow.Api.Services.Workspaces;
+using VantraFlow.Api.Shared;
 
 namespace VantraFlow.Api.Controllers;
 
@@ -25,7 +26,8 @@ namespace VantraFlow.Api.Controllers;
 /// workspace (429 <c>invite_limit</c>), and each person 30 a minute.
 /// </summary>
 public sealed class MembersController(
-    IWorkspaceStore workspaces, IInviteStore invites, IUserDirectory users, IWorkspaceMail mail, IWorkspaceFeatures features, ILogger<MembersController> log)
+    IWorkspaceStore workspaces, IInviteStore invites, IUserDirectory users, IWorkspaceMail mail, IWorkspaceFeatures features, ILogger<MembersController> log,
+    SharedMembers? shared = null, SharedTeam? team = null)
     : FlowControllerBase(workspaces)
 {
     public const string RateLimitPolicy = "invites";
@@ -45,6 +47,7 @@ public sealed class MembersController(
     {
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (await SharedRefusalAsync(workspaceId) is { } sharedRefusal) return sharedRefusal;
         var role = body?.Role ?? FlowRoles.Member;
         if (!WorkspaceRules.IsInvitableRole(role)) return BadRequest(new { error = "Choose admin or member." });
         var email = InviteRules.NormalizeEmail(body?.Email);
@@ -62,6 +65,7 @@ public sealed class MembersController(
     {
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (await SharedRefusalAsync(workspaceId) is { } sharedRefusal) return sharedRefusal;
         if (!FlowRoles.IsValid(body?.Role)) return BadRequest(new { error = "Choose owner, admin or member." });
         var plan = await Workspaces.ApplyAsync(workspaceId, s => WorkspaceRules.SetRole(s, Sub, vantraId, body!.Role!));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
@@ -75,6 +79,18 @@ public sealed class MembersController(
         var self = string.Equals(vantraId, Sub, StringComparison.OrdinalIgnoreCase);
         var (_, refusal) = self ? await MemberAsync(workspaceId) : await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (team is not null && shared is not null)
+        {
+            // A shared workspace: leaving is the shared record's; removing someone else is the shared Members page's.
+            var state = await SharedStateAsync(workspaceId);
+            if (state.Refusal is not null) return state.Refusal;
+            if (state.State is { } st)
+            {
+                if (!self) return SharedOnly();
+                var r = await team.LeaveAsync(st, new SharedActor(Sub, DisplayName, Email));
+                return r.Body is null ? StatusCode(r.Status) : StatusCode(r.Status, r.Body);
+            }
+        }
         var plan = await Workspaces.ApplyAsync(workspaceId, s => self ? WorkspaceRules.Leave(s, Sub) : WorkspaceRules.Remove(s, Sub, vantraId));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
         return plan.Ok ? NoContent() : Refuse(plan.Error!);
@@ -96,6 +112,7 @@ public sealed class MembersController(
     {
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (await SharedRefusalAsync(workspaceId) is { } sharedRefusal) return sharedRefusal;
         var email = InviteRules.NormalizeEmail(body?.Email);
         if (email is null) return BadRequest(new { error = "Enter a valid email address.", code = "invalid_email" });
         var role = string.IsNullOrWhiteSpace(body?.Role) ? FlowRoles.Member : body.Role.Trim().ToLowerInvariant();
@@ -158,11 +175,38 @@ public sealed class MembersController(
 
     private string? Origin => Request.Headers.Origin.ToString() is { Length: > 0 } o ? o : null;
 
+    /// <summary>The shared state when this workspace's members are shared (stage 2), or the refusal when that can't be told.</summary>
+    private async Task<(SharedState? State, IActionResult? Refusal)> SharedStateAsync(Guid workspaceId)
+    {
+        if (shared is null) return (null, null);
+        try { return (await shared.ForLocalAsync(SharedApps.Flow, workspaceId, strict: true), null); }
+        catch (SharedUnavailableException)
+        {
+            return (null, StatusCode(503, new { error = "The shared workspace couldn't be reached. Nothing was changed. Try again.", code = SharedCodes.Unavailable }));
+        }
+    }
+
+    /// <summary>
+    /// 409 <c>shared_workspace</c> when this workspace's members are shared across the Vantra apps: they're managed on
+    /// the shared Members page (<see cref="SharedMembersController"/>), never in Flow's own list alone.
+    /// </summary>
+    private async Task<IActionResult?> SharedRefusalAsync(Guid workspaceId)
+    {
+        var (state, refusal) = await SharedStateAsync(workspaceId);
+        return refusal ?? (state is null ? null : SharedOnly());
+    }
+
+    private ObjectResult SharedOnly() => Conflict(new
+    {
+        error = "This workspace's members are shared across the Vantra apps. Reload to manage them here.", code = "shared_workspace",
+    });
+
     /// <summary>Owners and admins, once db/005 has run.</summary>
     private async Task<IActionResult?> InviteRefusalAsync(Guid workspaceId)
     {
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
+        if (await SharedRefusalAsync(workspaceId) is { } sharedRefusal) return sharedRefusal;
         if (!await features.InvitesReadyAsync())
             return StatusCode(503, new { error = "Invitations arrive with the next server update.", code = WorkspaceCodes.NotReady });
         return null;

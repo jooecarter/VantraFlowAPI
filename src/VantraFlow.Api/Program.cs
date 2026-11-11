@@ -44,6 +44,13 @@ builder.Services.AddSingleton<FlowSchema>();
 // VantraProjectsAPI db/shared/001). Read only; answers nothing until those tables exist and hold a link.
 builder.Services.AddSingleton<ISharedWorkspaceStore, SqlSharedWorkspaceStore>();
 builder.Services.AddSingleton<SharedWorkspaces>();
+// Stage 2: members, app access and invitations from the shared record (db/shared/002), Flow's own list mirrored.
+builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedStore, VantraFlow.Api.Shared.SqlSharedStore>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedMembers>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedMirror, VantraFlow.Api.Shared.FlowSharedMirror>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedSync>();
+builder.Services.AddScoped<VantraFlow.Api.Shared.ISharedHost, VantraFlow.Api.Shared.FlowSharedHost>();
+builder.Services.AddScoped<VantraFlow.Api.Shared.SharedTeam>();
 builder.Services.AddScoped<FlowReadyFilter>();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<WorkspacesRepository>();
