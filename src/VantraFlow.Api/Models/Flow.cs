@@ -64,6 +64,16 @@ public sealed record RunStepRow(
     string RunId, int Seq, string StepId, string Type, string? App, string? StepAction, string Name, string Status, int Attempt,
     string? Input, string? Output, string? Error, DateTime StartedAt, int DurationMs);
 
+public sealed record OAuthConnectionRow(
+    Guid Id, Guid WorkspaceId, string Provider, string AccountId, string AccountName, string? AccountEmail, string? TeamId, string? BotUserId,
+    string Scopes, byte[] AccessCipher, byte[]? RefreshCipher, DateTime? ExpiresAt, string Status, string? LastError, string ConnectedBy,
+    string? ConnectedByName, DateTime ConnectedAt, DateTime? LastUsedAt);
+
+/// <summary>An enabled flow with a polling trigger, and where its poll is up to (null until its first poll).</summary>
+public sealed record PollDueRow(
+    string FlowId, Guid WorkspaceId, string Provider, string TriggerEvent, string Definition, DateTime UpdatedAt, string? Fingerprint, string? Bookmark,
+    DateTime? NextPollAt, int? Failures);
+
 // ── Roles ─────────────────────────────────────────────────────────────────
 
 public static class FlowRoles
@@ -122,6 +132,13 @@ public sealed record RunStepDto(
 
 public sealed record RunDetailDto(RunSummaryDto Run, JsonNode? Trigger, IReadOnlyList<RunStepDto> Steps, JsonNode? Definition);
 
+/// <summary>An outside app (Slack, Microsoft 365, Google): set up on this server (<c>Configured</c>), db/004 in place (<c>Ready</c>), and the workspace's connection.</summary>
+public sealed record OAuthAppDto(string Provider, string Name, bool Configured, bool Ready, OAuthConnectionDto? Connection);
+
+public sealed record OAuthConnectionDto(
+    string Id, string Provider, string AccountName, string? AccountEmail, string Status, string? LastError, string? ConnectedByName, string ConnectedAt,
+    string? LastUsedAt, IReadOnlyList<string> Scopes);
+
 // ── Bodies ────────────────────────────────────────────────────────────────
 
 public sealed record CreateWorkspaceBody(string? Name, string? TimeZone);
@@ -137,3 +154,4 @@ public sealed record HookSecretBody(bool Signed);
 /// <summary>A flow's alert: true (email me), false (never), null (the workspace's default).</summary>
 public sealed record FlowAlertsBody(bool? On);
 public sealed record WorkspaceAlertsBody(bool On);
+public sealed record OAuthFinishBody(string? Id);

@@ -16,7 +16,7 @@ namespace VantraFlow.Api.Services.Connectors;
 /// connect time; no redirects). Never logs a key, a secret or a request's headers.
 /// </summary>
 public sealed class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
-    FlowsRepository flows, FlowSignal signal)
+    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -39,12 +39,15 @@ public sealed class StepActions(Connections connections, EmailService email, Eng
                 "email" => await EmailAsync(call, ct),
                 "http" => await HttpAsync(call.Input, ct),
                 "flow" => await RunFlowAsync(call),
+                "slack" or "microsoft" or "google" => await oauth.RunAsync(call, ct),
                 _ => StepOutcome.Fail("This step isn't something Vantra Flow can do."),
             };
         }
         catch (AppUnavailableException e) { return StepOutcome.Fail(e.Message, retryable: true); }
         catch (AppRevokedException e) { return StepOutcome.Fail(e.Message); }
-        catch (AppRefusedException e) { return StepOutcome.Fail(e.Message, retryable: e.Status is 409 or 423); }
+        catch (AppRefusedException e) { return StepOutcome.Fail(e.Message, retryable: e.Status is 409 or 423 && e.Code != "not_connected"); }
+        catch (OAuth.OAuthUnauthorizedException e) { return StepOutcome.Fail(e.Message); }
+        catch (OAuth.RateLimitedException e) { return StepOutcome.Fail(e.Message, retryable: true); }
     }
 
     // ── Run another flow ──

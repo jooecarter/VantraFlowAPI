@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace VantraFlow.Api.Services.Engine;
 
 /// <summary>One action to carry out: which step, its input with the tokens filled in, and for which run.</summary>
-public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test, int Depth = 0);
+public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test, int Depth = 0, string? TimeZone = null);
 
 /// <summary>
 /// How an action went. <see cref="Retryable"/>: worth trying again (a timeout, a 5xx, a 429, the app unreachable);
@@ -280,7 +280,7 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             timeout.CancelAfter(TimeSpan.FromSeconds(limits.StepTimeoutSeconds));
             try
             {
-                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data)), timeout.Token);
+                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data), Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null), timeout.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {

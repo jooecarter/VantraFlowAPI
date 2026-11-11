@@ -12,6 +12,7 @@ tests/VantraFlow.Api.Tests xunit (no database needed)
 db/001_flow.sql           the schema: one idempotent, Azure-ready batch
 db/002_failure_alerts.sql failure alerts: the per-flow setting and the workspace default
 db/003_flow_versions.sql  versions: a copy of each save, to look at and restore
+db/004_oauth_connectors.sql Slack, Microsoft 365 and Google: OAuth connections, waiting consents, poll cursors
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -95,12 +96,29 @@ bash scripts/sqlcheck.sh
 - **Actions.** Orbit: create, update and find records, and add a comment to a record. Projects: create projects
   and tasks, find tasks, update a task (status, assignee, due date) and add a comment.
 
+- **Outside apps** (db/004): Slack, Microsoft 365 and Google, connected with OAuth 2.0 per Flow workspace (owners
+  and admins). One shared callback, `{App:ApiBaseUrl}/api/oauth/{provider}/callback`; the consent's state is sealed and
+  spent once, and the studio claims the result as the same person, so a link someone else started can't attach your
+  account to their workspace. Tokens are sealed (AES-256-GCM, bound to the row), refreshed before they expire, and
+  revoked at the provider on disconnect where it can be (Slack, Google). A refresh the provider refuses ends the
+  connection and pauses the flows that need it. Each provider stays hidden ("Not set up yet") until its settings exist.
+  - **Slack**: send a channel message, send a direct message; "New message in channel" through the Events API
+    (`POST /api/oauth/slack/events`, signed with `Connectors:Slack:SigningSecret`). Messages Flow's own app posted
+    only start flows that opted in; thread replies and other bots' posts only when the trigger asks.
+  - **Microsoft 365** (Graph, delegated): send an email as you, post to a Teams channel, create a calendar event;
+    "New email in Outlook" polls the inbox with a delta link.
+  - **Google**: send an email as you (Gmail); add, find and update a row in a Google Sheet; "New email in Gmail"
+    (the mailbox's history) and "New row in a sheet" poll.
+  - Polling runs on the worker's minute tick, a cursor per flow under a lease, every `Connectors:PollSeconds` (120),
+    backing off on failures (doubling to an hour, and at least as long as a 429 asks). A saved or re-enabled flow
+    starts from what arrives after.
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
 waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.
-Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`.
+Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`. Until db/004 has run,
+the outside apps are hidden, their endpoints answer 503 `not_ready`, and nothing polls.
 
 ## Settings
 
@@ -120,9 +138,13 @@ Set these in App Service configuration, never in the repo:
 | `Connectors:Projects:ApiUrl`, `Connectors:Projects:AppUrl` | defaults to the live Projects |
 | `Graph:*` or `Smtp:*` | the email sender (the same as Orbit's) |
 | `Google:ClientId`, `Microsoft:ClientId` | social sign-in |
+| `Connectors:Slack:ClientId`, `…:ClientSecret`, `…:SigningSecret` | the Slack connector |
+| `Connectors:Microsoft:ClientId`, `…:ClientSecret`, `…:Tenant` (optional) | the Microsoft 365 connector |
+| `Connectors:Google:ClientId`, `…:ClientSecret` | the Google connector |
+| `Connectors:PollSeconds` | optional; how often polling triggers poll (default 120) |
 | `Flow:MonthlyRuns`, `Flow:EmailsPerDay`, … | limits (see appsettings.json) |
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

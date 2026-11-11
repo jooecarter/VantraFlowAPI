@@ -12,6 +12,7 @@ using VantraFlow.Api.Services;
 using VantraFlow.Api.Services.Auth;
 using VantraFlow.Api.Services.Connectors;
 using VantraFlow.Api.Services.Engine;
+using VantraFlow.Api.Services.OAuth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -71,6 +72,23 @@ builder.Services.AddScoped<IStepActions, StepActions>();
 builder.Services.AddScoped<SqlEngineStore>();
 builder.Services.AddSingleton<FlowSignal>();
 builder.Services.AddHostedService<FlowWorker>();
+// Outside apps (Slack, Microsoft 365, Google): OAuth 2.0 per workspace, their actions and polling triggers (db/004).
+builder.Services.AddScoped<OAuthRepository>();
+builder.Services.AddSingleton<SlackProvider>();
+builder.Services.AddSingleton<MicrosoftProvider>();
+builder.Services.AddSingleton<GoogleProvider>();
+builder.Services.AddSingleton<OAuthProviders>();
+builder.Services.AddScoped<OAuthConnections>();
+builder.Services.AddScoped<OAuthActions>();
+builder.Services.AddScoped<IPollSource, OAuthPollSource>();
+builder.Services.AddScoped<PollTriggers>();
+// The providers' APIs: fixed public hosts, no redirects, no cookies.
+builder.Services.AddHttpClient(OAuthProvider.ClientName, c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(25);
+        c.DefaultRequestHeaders.UserAgent.ParseAdd("VantraFlow/1.0");
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 // The apps' APIs: no redirects, no cookies.
 builder.Services.AddHttpClient(AppApi.ClientName, c =>
     {

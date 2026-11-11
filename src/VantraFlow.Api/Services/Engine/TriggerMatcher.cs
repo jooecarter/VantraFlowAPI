@@ -14,6 +14,9 @@ public static class EventSources
     public const string Schedule = "schedule";
     public const string Webhook = "webhook";
     public const string Manual = "manual";
+    public const string Slack = "slack";
+    public const string Microsoft = "microsoft";
+    public const string Google = "google";
 }
 
 /// <summary>
@@ -43,6 +46,13 @@ public static class TriggerMatcher
                     "record.matches" => ev.Kind is "record.created" or "record.updated" && BecameTrue(t, data) ? data : null,
                     _ => null,
                 };
+            case EventSources.Slack:
+                if (t.Event != "message" || ev.Kind != "message") return null;
+                if (!string.Equals(Tokens.Text(t.Config["channel"]), ev.Scope, StringComparison.Ordinal)) return null;
+                // Thread replies and other apps' posts only when asked for.
+                if (data["isReply"] is JsonValue r && r.TryGetValue<bool>(out var reply) && reply && !On(t.Config["replies"])) return null;
+                if (data["isBot"] is JsonValue b && b.TryGetValue<bool>(out var bot) && bot && !On(t.Config["bots"])) return null;
+                return data;
             case EventSources.Projects:
                 if (t.Event != ev.Kind) return null;
                 if (ev.Kind is "task.created" or "task.completed"
@@ -53,6 +63,8 @@ public static class TriggerMatcher
                 return null;
         }
     }
+
+    private static bool On(JsonNode? n) => n is JsonValue v && (v.TryGetValue<bool>(out var b) ? b : Tokens.Text(v) == "true");
 
     /// <summary>"Record updated": any change, or — with fields chosen — a change to one of them (by id or name).</summary>
     public static bool ChangedWatched(TriggerDef t, JsonObject data)
