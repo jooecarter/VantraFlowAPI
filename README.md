@@ -13,6 +13,7 @@ db/001_flow.sql           the schema: one idempotent, Azure-ready batch
 db/002_failure_alerts.sql failure alerts: the per-flow setting and the workspace default
 db/003_flow_versions.sql  versions: a copy of each save, to look at and restore
 db/004_oauth_connectors.sql Slack, Microsoft 365 and Google: OAuth connections, waiting consents, poll cursors
+db/005_workspace_invites.sql workspaces: their colour and logo, and invitations (tokens kept hashed)
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -38,8 +39,24 @@ bash scripts/sqlcheck.sh
   connecting an app's workspaces needs that when the person has two-step sign-in on, and the assertion carries it so
   the app checks again. If an app can't answer, sign-in stops (503 `two_factor_unavailable`).
 - **Workspaces.** Flow has its own workspaces (`flow.Workspaces`), with owner, admin and member roles. Your first
-  visit makes one for you. Each workspace links to one Orbit workspace and one Projects workspace through its
-  connections. Only owners and admins connect apps.
+  visit makes one for you, and you can make more (`Workspaces:MaxOwned`, 20 each). Each workspace links to one Orbit
+  workspace and one Projects workspace through its connections. Only owners and admins connect apps. Every
+  workspace endpoint checks the caller's role on the server (`Services/Workspaces/WorkspaceRules.cs`, as Orbit's):
+  - owners and admins rename it, set its time zone, colour and logo (a PNG, JPEG or WebP data URL, 100,000
+    characters at most), invite people, change roles and remove people;
+  - only an owner makes someone an owner, changes or removes an owner, hands the workspace over (they become an
+    owner, you an admin) or deletes it; there is always at least one owner, so the last one can't leave;
+  - inviting an address that has a Vantra account adds them at once and emails them a note. Anyone else gets an
+    invitation (db/005): a link to `{App:BaseUrl}/invite/{token}`, emailed through the email service, good for 14
+    days. The token is 32 random bytes; only its SHA-256 is stored, it travels in request bodies (never a URL) and
+    is never logged, so a resend makes a new link. Opening the link signed out keeps it until the person signs in
+    or signs up, then accepts it as that account (its email must be the invited address). Invitations can be
+    resent (one a minute) or revoked. 100 invitations and adds a day per workspace, 30 a minute per person;
+  - **deleting** a workspace (its name typed to confirm) switches its flows off, disconnects its Orbit and
+    Projects connections in those apps (Flow's webhooks removed, its key revoked) and revokes its Slack and Google
+    grants at the provider (best effort: an app that can't be reached is reported, not waited for), then deletes
+    its runs, run logs and queued events, and, in one transaction, its flows and versions, connections, tokens,
+    poll cursors, invitations, usage, members and the workspace. A delete that fails part way can be run again.
 - **Connections.** Each connection has a connect step, triggers and actions:
   - **Connect.** Flow signs a two-minute assertion (audience `vantra-flow-to-orbit` or `vantra-flow-to-projects`).
     The app checks that the person owns or administers the workspace they chose there, and hands back an API key
@@ -118,7 +135,9 @@ bash scripts/sqlcheck.sh
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
 waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.
 Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`. Until db/004 has run,
-the outside apps are hidden, their endpoints answer 503 `not_ready`, and nothing polls.
+the outside apps are hidden, their endpoints answer 503 `not_ready`, and nothing polls. Until db/005 has run, the
+workspace colour, logo and invitations are hidden and their endpoints answer 503 `not_ready`; adding someone who
+already has a Vantra account, renaming, leaving, handing over and deleting all work.
 
 ## Settings
 
@@ -143,8 +162,9 @@ Set these in App Service configuration, never in the repo:
 | `Connectors:Google:ClientId`, `…:ClientSecret` | the Google connector |
 | `Connectors:PollSeconds` | optional; how often polling triggers poll (default 120) |
 | `Flow:MonthlyRuns`, `Flow:EmailsPerDay`, … | limits (see appsettings.json) |
+| `Workspaces:MaxOwned` | optional; how many workspaces one person may own (default 20) |
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

@@ -88,9 +88,13 @@ public static class FlowRoles
 
 // ── Wire shapes (camelCase) ───────────────────────────────────────────────
 
-/// <summary>A workspace; <c>AlertOnFailure</c> is the failure-alert default, null until db/002 has run (the studio hides it).</summary>
+/// <summary>
+/// A workspace; <c>AlertOnFailure</c> is the failure-alert default, null until db/002 has run (the studio hides it).
+/// <c>Color</c> and <c>Logo</c> are its look (db/005): <c>Color</c> is null until db/005 has run, and the studio then
+/// hides the look and invitations. <c>MemberCount</c>, <c>CreatedAt</c> and <c>IsPrimaryOwner</c> describe it for the switcher.
+/// </summary>
 public sealed record WorkspaceDto(Guid Id, string Name, string TimeZone, string Role, int MonthlyRunQuota, int RunsThisMonth, int EmailsToday, int EmailsPerDay,
-    bool? AlertOnFailure = null);
+    bool? AlertOnFailure = null, string? Color = null, string? Logo = null, int MemberCount = 0, string? CreatedAt = null, bool IsPrimaryOwner = false);
 
 public sealed record MemberDto(string VantraId, string? Name, string? Email, string Role, string AddedAt);
 
@@ -141,8 +145,9 @@ public sealed record OAuthConnectionDto(
 
 // ── Bodies ────────────────────────────────────────────────────────────────
 
-public sealed record CreateWorkspaceBody(string? Name, string? TimeZone);
-public sealed record UpdateWorkspaceBody(string? Name, string? TimeZone);
+public sealed record CreateWorkspaceBody(string? Name, string? TimeZone, string? Color = null, string? Logo = null);
+/// <summary>Left out (null): unchanged. <c>Color</c> or <c>Logo</c> <c>""</c>: back to the default tile / no logo.</summary>
+public sealed record UpdateWorkspaceBody(string? Name, string? TimeZone, string? Color = null, string? Logo = null);
 public sealed record AddMemberBody(string? Email, string? Role);
 public sealed record UpdateMemberBody(string? Role);
 public sealed record ConnectBody(Guid? WorkspaceId);
