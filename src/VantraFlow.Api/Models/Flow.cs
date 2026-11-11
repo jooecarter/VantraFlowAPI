@@ -28,6 +28,33 @@ public sealed record FlowVersionRow(
 
 public sealed record FlowStatsRow(string FlowId, int Runs, int Failures);
 
+/// <summary>A flow's runs and failures on one day (UTC), for the list's sparkline.</summary>
+public sealed record FlowDayRow(string FlowId, DateTime Day, int Runs, int Failures);
+
+/// <summary>The last seven days' runs and failures per flow, oldest day first, today last.</summary>
+public static class FlowDays
+{
+    public const int Count = 7;
+
+    /// <summary>The first day counted: six days before <paramref name="nowUtc"/>'s, at midnight UTC.</summary>
+    public static DateTime Since(DateTime nowUtc) => nowUtc.Date.AddDays(-(Count - 1));
+
+    public static Dictionary<string, (int[] Runs, int[] Failures)> Spread(IEnumerable<FlowDayRow> rows, DateTime nowUtc)
+    {
+        var first = Since(nowUtc);
+        var byFlow = new Dictionary<string, (int[] Runs, int[] Failures)>();
+        foreach (var r in rows)
+        {
+            var i = (int)(r.Day.Date - first).TotalDays;
+            if (i < 0 || i >= Count) continue;
+            if (!byFlow.TryGetValue(r.FlowId, out var days)) byFlow[r.FlowId] = days = (new int[Count], new int[Count]);
+            days.Runs[i] += r.Runs;
+            days.Failures[i] += r.Failures;
+        }
+        return byFlow;
+    }
+}
+
 public sealed record RunRow(
     long Seq, string Id, Guid WorkspaceId, string FlowId, string FlowName, int FlowVersion, string Definition, string TriggerData,
     string? Context, string? Position, int Attempt, string Status, bool Test, string? ReplayOf, string? EventId, int StepCount,
@@ -65,7 +92,8 @@ public sealed record AppDto(string App, string Name, bool Configured, Connection
 
 public sealed record FlowSummaryDto(
     string Id, string Name, string? Description, bool Enabled, string TriggerApp, string TriggerEvent, IReadOnlyList<string> Apps,
-    int StepCount, string? LastRunAt, string? LastRunStatus, int Runs7d, int Failures7d, string UpdatedAt, string? PausedReason, string? TemplateId);
+    int StepCount, string? LastRunAt, string? LastRunStatus, int Runs7d, int Failures7d, string UpdatedAt, string? PausedReason, string? TemplateId,
+    IReadOnlyList<int>? Daily7d = null, IReadOnlyList<int>? DailyFailures7d = null);
 
 public sealed record FlowDto(
     string Id, string Name, string? Description, bool Enabled, JsonNode Definition, int Version, string? HookUrl, bool HookSigned,

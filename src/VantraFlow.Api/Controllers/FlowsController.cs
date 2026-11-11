@@ -11,7 +11,7 @@ namespace VantraFlow.Api.Controllers;
 /// <summary>
 /// Flows: the list, the builder, switching on and off, and testing with sample data.
 /// <code>
-/// GET    api/w/{ws}/flows                         → summaries with last run and 7-day counts
+/// GET    api/w/{ws}/flows                         → summaries with last run, 7-day counts and runs per day
 /// POST   api/w/{ws}/flows                         { name, description, definition, templateId } → 201
 /// GET    api/w/{ws}/flows/{id}
 /// PUT    api/w/{ws}/flows/{id}                    { name, description, definition } → { flow, errors }
@@ -39,8 +39,14 @@ public sealed class FlowsController(
     {
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
-        var stats = (await flows.StatsAsync(workspaceId, DateTime.UtcNow.AddDays(-7))).ToDictionary(s => s.FlowId);
-        return Ok((await flows.ListAsync(workspaceId)).Select(f => Summary(f, stats.GetValueOrDefault(f.Id))).ToList());
+        var now = DateTime.UtcNow;
+        var stats = (await flows.StatsAsync(workspaceId, now.AddDays(-7))).ToDictionary(s => s.FlowId);
+        var days = FlowDays.Spread(await flows.DailyAsync(workspaceId, FlowDays.Since(now)), now);
+        return Ok((await flows.ListAsync(workspaceId)).Select(f =>
+        {
+            var d = days.TryGetValue(f.Id, out var x) ? x : (Runs: new int[FlowDays.Count], Failures: new int[FlowDays.Count]);
+            return Summary(f, stats.GetValueOrDefault(f.Id)) with { Daily7d = d.Runs, DailyFailures7d = d.Failures };
+        }).ToList());
     }
 
     [HttpPost("api/w/{workspaceId:guid}/flows")]
