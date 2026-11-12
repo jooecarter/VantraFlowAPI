@@ -17,7 +17,7 @@ namespace VantraFlow.Api.Controllers;
 /// POST api/w/{ws}/runs/{id}/cancel                      → a queued or waiting run stops
 /// </code>
 /// </summary>
-public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, IConfiguration config)
+public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, Services.Billing.Plans plans)
     : FlowControllerBase(workspaces)
 {
     [HttpGet("api/w/{workspaceId:guid}/runs")]
@@ -49,11 +49,12 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
         if (await flows.GetAsync(workspaceId, run.FlowId) is not { } flow) return NotFound(new { error = "Its flow has been deleted." });
         if (FlowDefinition.Parse(flow.Definition) is not { } def) return BadRequest(new { error = "The flow couldn't be read." });
         var ws = (await Workspaces.GetAsync(workspaceId))!;
-        var limits = FlowLimits.From(config);
         var now = DateTime.UtcNow;
-        var quota = ws.MonthlyRunQuota ?? limits.MonthlyRuns;
-        if (!await engine.CountRunAsync(workspaceId, now, quota))
-            return StatusCode(429, new { error = $"This workspace has used its {quota:N0} runs for the month.", code = "quota" });
+        // The plan: the month's runs, and premium steps (402, with the tier that has them).
+        if (await plans.AdmitRunAsync(ws, def, now) is { } refused)
+            return refused.Code == Services.Billing.PlanCodes.Premium
+                ? StatusCode(402, new { error = refused.Message, code = refused.Code, upgradeTo = refused.UpgradeTo })
+                : StatusCode(429, new { error = refused.Message, code = "quota", upgradeTo = refused.UpgradeTo });
         JsonNode trigger;
         try { trigger = JsonNode.Parse(run.TriggerData) ?? new JsonObject(); } catch (JsonException) { trigger = new JsonObject(); }
         var replay = EventProcessor.NewRun(flow, def, ws, trigger, now, null, run.Id, test: run.Test);

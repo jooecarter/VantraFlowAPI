@@ -129,6 +129,32 @@ bash scripts/sqlcheck.sh
   - Polling runs on the worker's minute tick, a cursor per flow under a lease, every `Connectors:PollSeconds` (120),
     backing off on failures (doubling to an hour, and at least as long as a 429 asks). A saved or re-enabled flow
     starts from what arrives after.
+- **Plans and billing** (db/008). Flow is sold and billed on its own, per workspace (not per seat), by the month's
+  runs: Free (100 runs, 3 active flows, core apps), Starter (2,000, unlimited flows), Pro (10,000, premium apps and
+  steps, AI builder credits) and Business (50,000, priority support). The numbers are `Billing:*` settings; the
+  amounts are Stripe prices (`Stripe:Prices:{key}`), and the studio's display copy is one file there.
+  - **Premium** apps and steps — Slack, Microsoft 365, Google, HTTP requests, webhooks, sub-flows, paths and
+    approvals (`Billing:PremiumApps`, `Billing:PremiumSteps`, plus a catalog entry's own `Premium` flag) — can be
+    added on any plan but switched on only on Pro and Business.
+  - **Enforced on the server.** At the month's quota new runs are logged as skipped; owners get an email at 80% and
+    at 100%, once each a month. Switching a flow on checks the active-flow limit and premium steps (402 with `code`
+    `plan_flows` or `plan_premium` and `upgradeTo`). A flow that's on can't be saved with premium steps its plan
+    lacks. Replay counts as a run.
+  - **Trial.** 14 days of Pro for a new workspace, starting when billing goes live: every workspace that existed
+    before db/008 (and any made before Stripe is set up) stays on Pro until then, and its 14 days start the
+    moment `Stripe:SecretKey` is set. Owners hear three days before a trial ends, with how many flows Free wouldn't
+    cover.
+  - **Downgrades** never delete anything. Every five minutes the worker switches off what a workspace's plan no
+    longer covers — premium flows, then the least recently run over the active-flow limit — with the reason on each
+    flow and one email to its owners. They stay off until switched on again (after an upgrade).
+  - **Stripe**, as Vantra Projects: a customer per workspace; Checkout for one price (a running trial carries over);
+    the billing portal under Flow's own configuration (switch between Flow's prices, cancel at period end, invoices
+    and the card); and `POST /api/billing/webhook`, signature-verified, each event handled once, the subscription
+    re-read from Stripe. It handles `checkout.session.completed`, `customer.subscription.created`, `.updated` and
+    `.deleted`, and `invoice.payment_failed` (an email to owners, once per invoice). Everything Flow makes in Stripe
+    is stamped `vantra_app=flow`; anything else on a shared Stripe account (Projects') is ignored. Owners and admins
+    manage billing; everyone in the workspace sees the plan. Without `Stripe:SecretKey` the plan still shows, as
+    "Not set up yet", and checkout answers 503 `billing_off`.
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
@@ -137,7 +163,9 @@ waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 5
 Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`. Until db/004 has run,
 the outside apps are hidden, their endpoints answer 503 `not_ready`, and nothing polls. Until db/005 has run, the
 workspace colour, logo and invitations are hidden and their endpoints answer 503 `not_ready`; adding someone who
-already has a Vantra account, renaming, leaving, handing over and deleting all work.
+already has a Vantra account, renaming, leaving, handing over and deleting all work. Until db/008 has run, plans
+aren't enforced (the server's run quota applies as before), Plan & billing reads as not set up, checkout answers 503
+`not_ready`, and the Stripe webhook answers 503 so Stripe keeps its events and retries.
 
 ## Settings
 
@@ -162,9 +190,13 @@ Set these in App Service configuration, never in the repo:
 | `Connectors:Google:ClientId`, `…:ClientSecret` | the Google connector |
 | `Connectors:PollSeconds` | optional; how often polling triggers poll (default 120) |
 | `Flow:MonthlyRuns`, `Flow:EmailsPerDay`, … | limits (see appsettings.json) |
+| `Stripe:SecretKey` | Stripe's secret key: billing goes live (and trials start) when it's set |
+| `Stripe:WebhookSecret` | the signing secret of the webhook endpoint `{App:ApiBaseUrl}/api/billing/webhook` |
+| `Stripe:Prices:starter_month`, `…:starter_year`, `…:pro_month`, `…:pro_year`, `…:business_month`, `…:business_year` | a Stripe price id each, with GBP, EUR, AUD and CAD currency options |
+| `Billing:TrialDays`, `Billing:Tiers:{tier}:Runs`, `…:ActiveFlows`, `…:Premium`, `…:AiCredits`, `…:PrioritySupport`, `Billing:PremiumApps`, `Billing:PremiumSteps` | optional; the plans' numbers (see appsettings.json) |
 | `Workspaces:MaxOwned` | optional; how many workspaces one person may own (default 20) |
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/008_plans.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.
