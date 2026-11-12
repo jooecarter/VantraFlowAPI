@@ -153,7 +153,14 @@ public sealed record RunStepDto(
     int Seq, string StepId, string Type, string? App, string? Action, string Name, string Status, int Attempt,
     JsonNode? Input, JsonNode? Output, string? Error, string StartedAt, int DurationMs);
 
-public sealed record RunDetailDto(RunSummaryDto Run, JsonNode? Trigger, IReadOnlyList<RunStepDto> Steps, JsonNode? Definition);
+/// <summary>
+/// A run with its log. <c>RetryStepId</c>: on a failed run, the step "Retry from here" starts again at (null when it
+/// can't). <c>RetriedFrom</c>: on a retry, the step it started at.
+/// </summary>
+public sealed record RunDetailDto(RunSummaryDto Run, JsonNode? Trigger, IReadOnlyList<RunStepDto> Steps, JsonNode? Definition,
+    string? RetryStepId = null, RetriedFromDto? RetriedFrom = null);
+
+public sealed record RetriedFromDto(string StepId, string Name);
 
 /// <summary>An outside app (Slack, Microsoft 365, Google): set up on this server (<c>Configured</c>), db/004 in place (<c>Ready</c>), and the workspace's connection.</summary>
 /// <remarks>
