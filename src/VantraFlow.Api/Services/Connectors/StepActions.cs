@@ -112,10 +112,14 @@ public sealed partial class StepActions(Connections connections, EmailService em
                 ct.ThrowIfCancellationRequested();
                 if (!await engine.CountEmailAsync(call.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
                     return StepOutcome.Fail($"This workspace has sent its {limits.EmailsPerDay} emails for today.");
-                if (!await email.SendAsync(replyTo, fromName, address, "", subject, html))
+                if (await email.SendWithReasonAsync(replyTo, fromName, address, "", subject, html) is { Ok: false } failed)
+                {
+                    // Microsoft's answer in plain words: a wrong secret or a missing mailbox won't mend on a retry.
+                    var why = failed.Reason is { Length: > 0 } reason ? $" {reason}" : "";
                     return sent.Count == 0
-                        ? StepOutcome.Fail("The email couldn't be sent.", retryable: true)
-                        : StepOutcome.Fail($"Sent to {sent.Count}, then the email couldn't be sent to {address}.");
+                        ? StepOutcome.Fail($"The email couldn't be sent.{why}", retryable: failed.Retryable)
+                        : StepOutcome.Fail($"Sent to {sent.Count}, then the email couldn't be sent to {address}.{why}");
+                }
                 sent.Add(address);
             }
             return StepOutcome.Done(new JsonObject { ["to"] = sent, ["subject"] = subject, ["sent"] = sent.Count, ["sentFrom"] = senders.Vantra().Output() });
