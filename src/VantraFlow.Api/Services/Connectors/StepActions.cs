@@ -228,8 +228,10 @@ public sealed partial class StepActions(Connections connections, EmailService em
                 headers.Add((name.Trim(), Tokens.Text(value)));
             }
 
+        // The step's own "On error" timeout when it has one (the engine holds it to its caps), else 15 seconds.
+        var wait = call.Step.TimeoutSeconds is not null && call.TimeoutSeconds is { } own ? TimeSpan.FromSeconds(own) : HttpTimeout;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(HttpTimeout);
+        timeout.CancelAfter(wait);
         var client = http.CreateClient(HttpClientName);
         var origin = uri;
         var sendBody = true;
@@ -249,7 +251,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
 
             HttpResponseMessage res;
             try { res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return StepOutcome.Fail($"No answer within {HttpTimeout.TotalSeconds:0} seconds.", retryable: true); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return StepOutcome.Fail($"No answer within {wait.TotalSeconds:0} seconds.", retryable: true); }
             catch (HttpRequestException e) when (Innermost(e) is WebhookBlockedException blocked) { return StepOutcome.Fail(blocked.Message); }
             catch (HttpRequestException) { return StepOutcome.Fail($"Couldn't reach {uri.Host}.", retryable: true); }
             using (res)

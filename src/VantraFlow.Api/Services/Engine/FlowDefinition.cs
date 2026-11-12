@@ -48,6 +48,7 @@ public sealed class FlowDefinition
             if (s.Paths is not null) foreach (var p in s.Paths) foreach (var x in Walk(p.Steps)) yield return x;
             if (s.Else is not null) foreach (var e in Walk(s.Else)) yield return e;
             if (s.Do is not null) foreach (var d in Walk(s.Do)) yield return d;
+            if (s.ErrorPath is not null) foreach (var x in Walk(s.ErrorPath)) yield return x;
         }
     }
 }
@@ -81,15 +82,23 @@ public sealed class StepDef
     public List<PathDef>? Paths { get; set; }
     /// <summary>A loop's steps, run once for each item (<see cref="LoopRules"/>).</summary>
     public List<StepDef>? Do { get; set; }
+    /// <summary>"On error" (<see cref="ErrorRules"/>): how often a failed action is tried again, and how long it waits.</summary>
     public RetryDef? Retry { get; set; }
+    /// <summary>"On error": how long one try may take (5 s to <see cref="FlowLimits.MaxStepTimeoutSeconds"/>); null, the server's.</summary>
+    public int? TimeoutSeconds { get; set; }
+    /// <summary>"On error", when it still fails: <c>stop</c> (null, the default), <c>continue</c> or <c>path</c> (<see cref="ErrorRules"/>).</summary>
+    public string? OnError { get; set; }
+    /// <summary>The error path: the steps that run when this step fails for good (<c>onError: path</c>).</summary>
+    public List<StepDef>? ErrorPath { get; set; }
 
-    /// <summary>The lists of steps inside this one: a branch's sides, each path and "otherwise", a loop's steps.</summary>
+    /// <summary>The lists of steps inside this one: a branch's sides, each path and "otherwise", a loop's steps, an error path.</summary>
     public IEnumerable<List<StepDef>> Children()
     {
         if (Then is not null) yield return Then;
         if (Paths is not null) foreach (var p in Paths) if (p.Steps is not null) yield return p.Steps;
         if (Else is not null) yield return Else;
         if (Do is not null) yield return Do;
+        if (ErrorPath is not null) yield return ErrorPath;
     }
 }
 
@@ -101,11 +110,17 @@ public sealed class PathDef
     public List<StepDef> Steps { get; set; } = [];
 }
 
-/// <summary>How often a failed action is tried again, and the first wait (it doubles each time).</summary>
+/// <summary>
+/// How often a failed action is tried again (0: not at all), the first wait, whether the wait doubles each time
+/// (<c>exponential</c>, the default) or stays the same (<c>fixed</c>), and which failures are tried again:
+/// <c>transient</c> (the default: a timeout, a 5xx, a 429, the app unreachable) or <c>all</c>.
+/// </summary>
 public sealed class RetryDef
 {
     public int Max { get; set; } = 2;
     public int BackoffSeconds { get; set; } = 30;
+    public string? Backoff { get; set; }
+    public string? On { get; set; }
 }
 
 public sealed class FlowOptions
@@ -232,6 +247,9 @@ public sealed record FlowLimits(
 {
     public static readonly TimeSpan MaxDelay = TimeSpan.FromDays(30);
     public const int MaxRetries = 5;
+    /// <summary>The longest a step's own timeout may be (the cap <c>Flow:StepTimeoutSeconds</c> is held to).</summary>
+    public const int MaxStepTimeoutSeconds = 120;
+    public const int MinStepTimeoutSeconds = 5;
     public const int MaxConfigBytes = 64 * 1024;
 
     public static FlowLimits From(IConfiguration? c)
@@ -241,7 +259,7 @@ public sealed record FlowLimits(
         return new FlowLimits(
             Get("MaxSteps", 25, 1, 100),
             3,
-            Get("StepTimeoutSeconds", 30, 5, 120),
+            Get("StepTimeoutSeconds", 30, MinStepTimeoutSeconds, MaxStepTimeoutSeconds),
             Get("MaxAttempts", 5, 1, 20),
             Get("MonthlyRuns", 5000, 1, 10_000_000),
             Get("RunsPerMinute", 120, 1, 100_000),
@@ -275,6 +293,10 @@ public static partial class DefinitionRules
         var earlier = new List<string>();
         var vars = VariableRules.Names(def);
         CheckList(def.Steps, 1, errors, seen, earlier, limits, false, vars);
+        // A step inside an error path can't have one of its own (at any depth inside it).
+        foreach (var owner in all.Where(s => s.ErrorPath is { Count: > 0 }))
+            foreach (var inner in FlowDefinition.Walk(owner.ErrorPath!).Where(x => x.OnError == ErrorRules.Path))
+                errors.Add(new(inner.Id, "A step in an error path can't have an error path of its own."));
         return errors;
     }
 
@@ -301,6 +323,20 @@ public static partial class DefinitionRules
                 else if (token.StartsWith("vars.", StringComparison.Ordinal) && !vars.Contains(token.Split('.')[1]))
                     errors.Add(new(s.Id, $"{{{{{token}}}}} isn't set by a Set variable step."));
 
+            // "On error": its settings, and its error path, which sees the steps before it and the step itself (its
+            // error); the steps after it may use the path's outputs (empty when it didn't run).
+            errors.AddRange(ErrorRules.Check(s).Select(m => new DefinitionError(s.Id, m)));
+            var errorPathMade = new List<string>();
+            if (ErrorRules.Applies(s) && s.ErrorPath is { Count: > 0 } errorPath)
+            {
+                if (depth >= limits.MaxDepth) errors.Add(new(s.Id, $"Error paths can be nested {limits.MaxDepth - 1} deep at most."));
+                var before = earlier.Count;
+                earlier.Add(s.Id);
+                CheckList(errorPath, depth + 1, errors, seen, earlier, limits, inLoop, vars);
+                errorPathMade.AddRange(earlier.Skip(before + 1));
+                earlier.RemoveRange(before, earlier.Count - before);
+            }
+
             switch (s.Type)
             {
                 case StepTypes.Action:
@@ -309,8 +345,6 @@ public static partial class DefinitionRules
                     foreach (var key in action.Required)
                         if (Empty(s.Config[key])) errors.Add(new(s.Id, $"Fill in {action.Label(key)}."));
                     if (s.App == Ai.AiStepRules.App) errors.AddRange(Ai.AiStepRules.Check(s.Action, s.Config).Select(m => new DefinitionError(s.Id, m)));
-                    if (s.Retry is { } r && (r.Max < 0 || r.Max > FlowLimits.MaxRetries || r.BackoffSeconds < 5 || r.BackoffSeconds > 3600))
-                        errors.Add(new(s.Id, $"Retries: up to {FlowLimits.MaxRetries}, waiting 5 seconds to an hour."));
                     break;
                 case StepTypes.Delay:
                     if (DelayRules.IsUntil(s.Config))
@@ -375,6 +409,7 @@ public static partial class DefinitionRules
                     break;
             }
             earlier.Add(s.Id);
+            earlier.AddRange(errorPathMade);
         }
     }
 

@@ -4,7 +4,9 @@ using System.Text.Json.Nodes;
 namespace VantraFlow.Api.Services.Engine;
 
 /// <summary>One action to carry out: which step, its input with the tokens filled in, and for which run.</summary>
-public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test, int Depth = 0, string? TimeZone = null);
+/// <summary><c>TimeoutSeconds</c>: how long this try may take (the step's own "On error" timeout, or the server's).</summary>
+public sealed record StepCall(Guid WorkspaceId, string RunId, string FlowId, StepDef Step, JsonObject Input, bool Test, int Depth = 0, string? TimeZone = null,
+    int? TimeoutSeconds = null);
 
 /// <summary>
 /// How an action went. <see cref="Retryable"/>: worth trying again (a timeout, a 5xx, a 429, the app unreachable);
@@ -85,8 +87,8 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
 {
     private readonly Func<DateTime> now = clock ?? (() => DateTime.UtcNow);
 
-    public const int DefaultRetries = 2;
-    public const int DefaultBackoffSeconds = 30;
+    public const int DefaultRetries = ErrorRules.DefaultRetries;
+    public const int DefaultBackoffSeconds = ErrorRules.DefaultBackoffSeconds;
 
     /// <summary>The wait before try <paramref name="attempt"/> + 1: the base, doubling, at most an hour.</summary>
     public static TimeSpan Backoff(int baseSeconds, int attempt) =>
@@ -106,13 +108,26 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         _ => FlowCatalog.Action(s.App, s.Action)?.Title ?? "Step",
     };
 
-    public async Task<IReadOnlyList<StepLog>> ExecuteAsync(RunState s, CancellationToken ct, int maxSteps = 50)
+    /// <param name="slice">
+    /// How long a go may keep starting steps (the worker's, well inside its lease: a step may take up to
+    /// <see cref="FlowLimits.MaxStepTimeoutSeconds"/>); the rest is picked up straight after. Null: no limit but <paramref name="maxSteps"/>.
+    /// </param>
+    public async Task<IReadOnlyList<StepLog>> ExecuteAsync(RunState s, CancellationToken ct, int maxSteps = 50, TimeSpan? slice = null)
+    {
+        var logs = await GoAsync(s, ct, maxSteps, slice);
+        if (s.Status == RunStatuses.Failed && Positions.StepAt(s.Definition, s.Position) is { } failed) Remember(s, failed);
+        return logs;
+    }
+
+    private async Task<List<StepLog>> GoAsync(RunState s, CancellationToken ct, int maxSteps, TimeSpan? slice)
     {
         var logs = new List<StepLog>();
         s.Status = RunStatuses.Running;
+        var elapsed = Stopwatch.StartNew();
         for (var n = 0; n < maxSteps; n++)
         {
             ct.ThrowIfCancellationRequested();
+            if (n > 0 && slice is { } budget && elapsed.Elapsed >= budget) break;
             if (s.Position is null) { s.Status = RunStatuses.Succeeded; return logs; }
             var step = Positions.StepAt(s.Definition, s.Position);
             if (step is null)
@@ -159,6 +174,16 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         s.Status = RunStatuses.Queued;
         s.NotBefore = now();
         return logs;
+    }
+
+    /// <summary>
+    /// A failed run notes where it failed (<c>failure</c> in its data: the step and its position; inside a Repeat for
+    /// each, also the loop as it was and the item), so "Retry from here" can pick up there (<see cref="RetryRules"/>).
+    /// </summary>
+    private static void Remember(RunState s, StepDef step)
+    {
+        if (s.Data["failure"] is JsonObject) return;
+        s.Data["failure"] = new JsonObject { ["stepId"] = step.Id, ["position"] = s.Position };
     }
 
     /// <summary>False when the run now waits.</summary>
@@ -303,22 +328,37 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         return false;
     }
 
-    /// <summary>False when the run stops here (failed, or waiting to retry).</summary>
+    /// <summary>
+    /// False when the run stops here (failed, or waiting to retry). Its "On error" settings (<see cref="ErrorRules"/>)
+    /// say how long a try may take, how often a failure is tried again, and what happens when it still fails.
+    /// </summary>
     private async Task<bool> ActionAsync(RunState s, StepDef step, DateTime started, List<StepLog> logs, CancellationToken ct)
     {
         var name = NameIn(s, step);
+        // Back from its error path: the step failed for good, so the run stops here (inside a Repeat for each, the item).
+        if (ErrorRules.Handling(s.Steps[step.Id]) is { } handled)
+        {
+            handled.Remove("handling");
+            var why = Tokens.Text(handled["error"]?["message"]);
+            if (ItemFailed(s, why, started, logs)) return true;
+            s.Status = RunStatuses.Failed;
+            s.Error = $"{name}: {why}";
+            return false;
+        }
         var htmlKeys = step.App == "email" ? new HashSet<string> { "body" } : null;
         var input = Tokens.RenderNode(step.Config, s.Data, htmlKeys) as JsonObject ?? new JsonObject();
+        // An AI step writes its answer as it goes, so unless its "On error" sets its own timeout it gets longer than an app's call.
+        var seconds = step.TimeoutSeconds is null && Ai.AiStepRules.IsAi(step)
+            ? Math.Max(limits.StepTimeoutSeconds, Ai.AiStepRules.TimeoutSeconds) : ErrorRules.TimeoutOf(step, limits);
         var clock = Stopwatch.StartNew();
         StepOutcome outcome;
-        // An AI step writes its answer as it goes, so it gets longer than an app's call.
-        var seconds = Ai.AiStepRules.IsAi(step) ? Math.Max(limits.StepTimeoutSeconds, Ai.AiStepRules.TimeoutSeconds) : limits.StepTimeoutSeconds;
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
             timeout.CancelAfter(TimeSpan.FromSeconds(seconds));
             try
             {
-                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data), Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null), timeout.Token);
+                outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data),
+                    Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null, seconds), timeout.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -335,19 +375,39 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             s.Position = Positions.After(s.Definition, s.Position!);
             return true;
         }
-        var retries = s.Test ? 0 : Math.Min(step.Retry?.Max ?? DefaultRetries, Math.Max(0, limits.MaxAttempts - 1));
-        if (outcome.Retryable && s.Attempt < retries)
+        var policy = ErrorRules.RetryOf(step);
+        var retries = s.Test ? 0 : Math.Min(policy.Retries, Math.Max(0, limits.MaxAttempts - 1));
+        if (ErrorRules.Retries(policy, outcome) && s.Attempt < retries)
         {
             s.Attempt++;
-            var wait = Backoff(step.Retry?.BackoffSeconds ?? DefaultBackoffSeconds, s.Attempt);
+            var wait = ErrorRules.WaitBefore(policy, s.Attempt);
             logs.Add(Log(step, name, "retrying", s.Attempt - 1, input, null, $"{outcome.Error} Trying again in {Words(wait)}.", started, ms));
             s.Status = RunStatuses.Queued;
             s.NotBefore = now().Add(wait);
             return false;
         }
-        logs.Add(Log(step, name, "failed", s.Attempt, input, null, outcome.Error, started, ms));
+        var error = outcome.Error ?? "Failed.";
+        var attempts = s.Attempt + 1;
+        var mode = ErrorRules.ModeOf(step);
+        var failure = mode == ErrorRules.Stop ? null : ErrorRules.Failure(error, name, attempts, started);
+        // The log line says what happened next: carried on, or down the error path.
+        var logged = failure is null ? null : new JsonObject { ["onError"] = mode, ["error"] = failure["error"]!.DeepClone() };
+        logs.Add(Log(step, name, "failed", s.Attempt, input, logged, outcome.Error, started, ms));
         s.Attempt = 0;
-        if (ItemFailed(s, outcome.Error ?? "Failed.", started, logs)) return true;
+        if (mode == ErrorRules.Continue)
+        {
+            s.Steps[step.Id] = failure;
+            s.Position = Positions.After(s.Definition, s.Position!);
+            return true;
+        }
+        if (mode == ErrorRules.Path && Positions.EnterErrorPath(s.Definition, s.Position!) is { } into)
+        {
+            failure!["handling"] = true;
+            s.Steps[step.Id] = failure;
+            s.Position = into;
+            return true;
+        }
+        if (ItemFailed(s, error, started, logs)) return true;
         s.Status = RunStatuses.Failed;
         s.Error = $"{name}: {outcome.Error}";
         return false;
@@ -656,6 +716,12 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             s.Position = loopPath;
             return true;
         }
+        // "Retry from here" picks up at this item: the loop as it was, and the item.
+        if (Positions.StepAt(s.Definition, s.Position) is { } failedStep && s.Data["failure"] is null)
+            s.Data["failure"] = new JsonObject
+            {
+                ["stepId"] = failedStep.Id, ["position"] = s.Position, ["loopId"] = loop.Id, ["loop"] = state.DeepClone(), ["item"] = s.Data["loop"]?.DeepClone(),
+            };
         Note(state, Int(state["index"]), error);
         Finish(s, loop, state, started, logs, failedRun: true);
         return false;

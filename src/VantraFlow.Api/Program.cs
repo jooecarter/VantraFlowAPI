@@ -72,6 +72,11 @@ builder.Services.AddScoped<IWorkspaceMail, WorkspaceMail>();
 builder.Services.AddScoped<IWorkspaceTeardown, WorkspaceTeardown>();
 builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
+// Error handling (db/010): the daily failure digest and auto-pause.
+builder.Services.AddScoped<ReliabilityRepository>();
+builder.Services.AddScoped<IReliabilityMail, EmailReliabilityMail>();
+builder.Services.AddScoped(sp => new Reliability(sp.GetRequiredService<ReliabilityRepository>(), sp.GetRequiredService<IReliabilityMail>(),
+    sp.GetRequiredService<FlowLimits>(), sp.GetRequiredService<FailureAlerts>().AppBase, sp.GetRequiredService<ILoggerFactory>().CreateLogger<Reliability>()));
 // Insights (db/006 keeps daily totals past the runs' pruning), and the one place it reads a workspace's run limit.
 builder.Services.AddScoped<InsightsRepository>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Insights.IRunLimits, VantraFlow.Api.Services.Insights.PlanRunLimits>();
