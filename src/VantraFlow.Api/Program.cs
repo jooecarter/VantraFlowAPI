@@ -92,6 +92,30 @@ builder.Services.AddSingleton<VantraFlow.Api.Services.Billing.StripeBilling>();
 builder.Services.AddScoped<PlansRepository>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Billing.Plans>();
 
+// The developer API (/api/v1) and outgoing webhooks (db/012): keys checked by DevKeyFilter (120 requests a minute per
+// key), webhooks queued by DevEvents and sent by the worker through the guarded client below.
+builder.Services.AddScoped<DeveloperRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.IDevEvents, VantraFlow.Api.Services.Developer.DevEvents>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Developer.WebhookSender>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.WebhookDispatcher>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.DevEndpoints>();
+builder.Services.AddSingleton(new VantraFlow.Api.Services.Developer.DevRateLimiter());
+builder.Services.AddScoped<IDevKeyStore, SqlDevKeyStore>();
+builder.Services.AddScoped<DevKeyFilter>();
+builder.Services.AddScoped<FlowSwitch>();
+// Webhook deliveries: every connection through NetworkGuard (public addresses only, checked at connect time), no
+// proxy, no redirects, no cookies.
+builder.Services.AddHttpClient(VantraFlow.Api.Services.Developer.WebhookSender.ClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        UseCookies = false,
+        AutomaticDecompression = DecompressionMethods.None,
+        ConnectTimeout = TimeSpan.FromSeconds(5),
+        ConnectCallback = NetworkGuard.ConnectAsync,
+    });
+
 // Team and organisation (db/011): folders, tags, owners, comments with @mention emails, the activity log, and moving
 // flows between workspaces (duplicate, export, import).
 builder.Services.AddScoped<TeamRepository>();
@@ -212,6 +236,15 @@ builder.Services
     {
         options.MapInboundClaims = false; // keep raw claim names (sub, email, ...)
         options.TokenValidationParameters = FlowTokenValidation.Session(builder.Configuration);
+        // A developer API key (Bearer vfk_…) isn't a session: /api/v1 checks it (DevKeyFilter), and it's never read or logged here.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = ctx =>
+            {
+                if (ctx.Request.Headers.Authorization.ToString().TrimStart().StartsWith("Bearer vfk_", StringComparison.OrdinalIgnoreCase)) ctx.NoResult();
+                return Task.CompletedTask;
+            },
+        };
     });
 builder.Services.AddAuthorization();
 
