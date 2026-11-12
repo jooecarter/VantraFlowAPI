@@ -250,18 +250,55 @@ FROM flow.RunSteps WHERE RunId = @RunId ORDER BY Seq;", new { RunId = runId })).
 
     // ── Housekeeping ──
 
-    /// <summary>Old claims and dead events after a week; runs and their logs after <paramref name="keepRunsDays"/> days.</summary>
-    public async Task PruneAsync(DateTime now, int keepRunsDays)
+    /// <summary>
+    /// Old claims and dead events after a week; runs and their logs after <paramref name="keepRunsDays"/> days. With
+    /// <paramref name="keepDays"/> (db/006 has run) the runs it deletes are added to their flow's day in
+    /// <c>flow.RunDays</c> first, in the same transaction, so Insights still counts them (<see cref="PruneRunsKeepingDaysSql"/>).
+    /// </summary>
+    public async Task PruneAsync(DateTime now, int keepRunsDays, bool keepDays = false)
     {
         using var conn = factory.Flow();
         await conn.ExecuteAsync(@"
 DELETE TOP (5000) FROM flow.FiredKeys WHERE At < @Week;
 DELETE TOP (5000) FROM flow.Events WHERE Status = N'dead' AND At < @Week;
 DELETE TOP (5000) FROM flow.RunSteps WHERE StartedAt < @Runs;
-DELETE TOP (5000) FROM flow.Runs WHERE StartedAt < @Runs AND Status IN (N'succeeded', N'failed', N'skipped', N'cancelled');
 DELETE TOP (5000) FROM flow.Usage WHERE LEN(Period) = 10 AND Period < @OldDay;",
             new { Week = now.AddDays(-7), Runs = now.AddDays(-keepRunsDays), OldDay = UsagePeriods.Day(now.AddDays(-40)) }, commandTimeout: 120);
+        await conn.ExecuteAsync(keepDays ? PruneRunsKeepingDaysSql : PruneRunsSql, new { Runs = now.AddDays(-keepRunsDays) }, commandTimeout: 120);
     }
+
+    public const string PruneRunsSql = @"
+DELETE TOP (5000) FROM flow.Runs WHERE StartedAt < @Runs AND Status IN (N'succeeded', N'failed', N'skipped', N'cancelled');";
+
+    /// <summary>The runs' prune once db/006 has run: what it deletes is added to each flow's day (test runs left out), at once.</summary>
+    public const string PruneRunsKeepingDaysSql = @"
+DECLARE @Gone TABLE (WorkspaceId UNIQUEIDENTIFIER NOT NULL, FlowId NVARCHAR(40) NOT NULL, FlowName NVARCHAR(160) NOT NULL, [Day] DATE NOT NULL,
+                     Status NVARCHAR(12) NOT NULL, Test BIT NOT NULL, StepCount INT NOT NULL);
+BEGIN TRY
+BEGIN TRANSACTION;
+DELETE TOP (5000) FROM flow.Runs
+OUTPUT DELETED.WorkspaceId, DELETED.FlowId, DELETED.FlowName, CAST(DELETED.StartedAt AS date), DELETED.Status, DELETED.Test, DELETED.StepCount INTO @Gone
+WHERE StartedAt < @Runs AND Status IN (N'succeeded', N'failed', N'skipped', N'cancelled');
+MERGE flow.RunDays WITH (HOLDLOCK) AS d
+USING (
+    SELECT WorkspaceId, [Day], FlowId, MAX(FlowName) AS FlowName,
+           SUM(CASE WHEN Status = N'succeeded' THEN 1 ELSE 0 END) AS Succeeded,
+           SUM(CASE WHEN Status = N'failed' THEN 1 ELSE 0 END) AS Failed,
+           SUM(CASE WHEN Status IN (N'succeeded', N'failed') THEN 0 ELSE 1 END) AS Other,
+           SUM(CASE WHEN Status = N'succeeded' THEN StepCount ELSE 0 END) AS Steps
+    FROM @Gone WHERE Test = 0
+    GROUP BY WorkspaceId, [Day], FlowId
+) AS g
+ON d.WorkspaceId = g.WorkspaceId AND d.[Day] = g.[Day] AND d.FlowId = g.FlowId
+WHEN MATCHED THEN UPDATE SET Succeeded = d.Succeeded + g.Succeeded, Failed = d.Failed + g.Failed, Other = d.Other + g.Other, Steps = d.Steps + g.Steps, FlowName = g.FlowName
+WHEN NOT MATCHED THEN INSERT (WorkspaceId, [Day], FlowId, FlowName, Succeeded, Failed, Other, Steps)
+    VALUES (g.WorkspaceId, g.[Day], g.FlowId, g.FlowName, g.Succeeded, g.Failed, g.Other, g.Steps);
+COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;";
 
     private static string? Clip(string? s, int max = 1000) => s is null ? null : s.Length <= max ? s : s[..max];
 }

@@ -72,6 +72,14 @@ builder.Services.AddScoped<IWorkspaceMail, WorkspaceMail>();
 builder.Services.AddScoped<IWorkspaceTeardown, WorkspaceTeardown>();
 builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
+// Insights (db/006 keeps daily totals past the runs' pruning), and the one place it reads a workspace's run limit.
+builder.Services.AddScoped<InsightsRepository>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Insights.IRunLimits, VantraFlow.Api.Services.Insights.ConfiguredRunLimits>();
+// The AI flow builder: OpenAI:ApiKey and OpenAI:Model (off until both exist), a monthly cap per workspace (Ai:MonthlyCap).
+builder.Services.AddScoped<AiRepository>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Ai.AiClient>();
+builder.Services.AddHttpClient(VantraFlow.Api.Services.Ai.AiClient.ClientName, c => c.Timeout = TimeSpan.FromSeconds(60))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
@@ -149,6 +157,10 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(InviteAcceptController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+    // Drafting a flow with AI: 6 a minute per person (each workspace also has its own per-minute share and monthly cap).
+    o.AddPolicy(AiController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 6, Window = TimeSpan.FromMinutes(1) }));
     // Webhook triggers and app events: 300 a minute per address and path.
     o.AddPolicy(IncomingController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") + ctx.Request.Path,

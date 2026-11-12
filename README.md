@@ -14,6 +14,7 @@ db/002_failure_alerts.sql failure alerts: the per-flow setting and the workspace
 db/003_flow_versions.sql  versions: a copy of each save, to look at and restore
 db/004_oauth_connectors.sql Slack, Microsoft 365 and Google: OAuth connections, waiting consents, poll cursors
 db/005_workspace_invites.sql workspaces: their colour and logo, and invitations (tokens kept hashed)
+db/006_ai_insights.sql    the AI builder's monthly count, time-saved figures, daily run totals, Insights' indexes
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -132,12 +133,34 @@ bash scripts/sqlcheck.sh
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
+- **AI flow builder** (`Controllers/AiController.cs`, `Services/Ai`). People describe an automation in plain words
+  (`POST api/w/{ws}/ai/draft { prompt, definition? }`) and get a draft to review: a name, a short explanation, the
+  definition and the apps it needs. It's never saved or switched on there. The call is OpenAI chat completions, as
+  Orbit's AI, with Structured Outputs (a strict JSON schema) and a 45-second timeout. The instructions summarise the
+  catalog straight from `FlowCatalog` (so new triggers and actions are offered with no change), the step types, and the
+  workspace's connected apps, Orbit tables and Projects projects. No key, token or secret is sent: with "Ask AI" in the
+  builder the current flow goes too, its headers and secret-looking values replaced and put back from the flow after.
+  The answer is held to the catalog (unknown apps, triggers, actions and step types dropped, ids made unique, size
+  limits kept) and checked as a save is; what the request didn't say is left empty for the builder's "to fix" list.
+  Each draft counts against the workspace's month (`Ai:MonthlyCap`, 300 by default; refunded when the call fails), and
+  drafting is limited to 6 a minute per person and 20 a minute per workspace. Off ("Not set up yet") until
+  `OpenAI:ApiKey` and `OpenAI:Model` are both set.
+- **Insights** (`GET api/w/{ws}/insights?days=7|30|90&flowId=`): runs per day (succeeded and failed), the success rate
+  against the period before, median and 95th-percentile duration, the busiest flows and those that fail most, the
+  steps that fail most with their commonest errors, the time saved (steps run in succeeded runs × minutes per step, 2 by
+  default, or a flow's own minutes per run; owners and admins set them, `PUT …/insights/time-saved`) and this month's
+  runs against the limit, read through `IRunLimits` alone. Added up in SQL. Once db/006 has run, the hourly prune adds
+  the runs it deletes to their flow's day (`flow.RunDays`) in the same transaction, so the 90 days hold up after the
+  runs are gone; durations and failing steps cover the runs still kept (`Flow:KeepRunsDays`).
+
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
 waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.
 Until db/003 has run, saves keep no versions and the version endpoints answer 503 `not_ready`. Until db/004 has run,
 the outside apps are hidden, their endpoints answer 503 `not_ready`, and nothing polls. Until db/005 has run, the
 workspace colour, logo and invitations are hidden and their endpoints answer 503 `not_ready`; adding someone who
-already has a Vantra account, renaming, leaving, handing over and deleting all work.
+already has a Vantra account, renaming, leaving, handing over and deleting all work. Until db/006 has run, the AI builder answers
+503 `not_ready`, Insights reads only the runs still kept and its time-saved settings answer 503 `not_ready`, and the
+prune keeps no daily totals.
 
 ## Settings
 
@@ -163,8 +186,10 @@ Set these in App Service configuration, never in the repo:
 | `Connectors:PollSeconds` | optional; how often polling triggers poll (default 120) |
 | `Flow:MonthlyRuns`, `Flow:EmailsPerDay`, … | limits (see appsettings.json) |
 | `Workspaces:MaxOwned` | optional; how many workspaces one person may own (default 20) |
+| `OpenAI:ApiKey`, `OpenAI:Model` | the AI flow builder (both needed; a model with Structured Outputs) |
+| `Ai:MonthlyCap` | optional; AI drafts per workspace per month (default 300; 0 turns drafting off) |
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.
