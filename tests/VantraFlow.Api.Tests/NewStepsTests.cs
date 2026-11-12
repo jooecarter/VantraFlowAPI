@@ -311,6 +311,19 @@ public sealed class ApprovalStepTests
     }
 
     [Fact]
+    public async Task The_run_list_says_a_run_waits_for_an_approval()
+    {
+        var def = Build.Flow(NewBuild.Approval("a1"), Build.Http("s2"));
+        var run = Build.Run(def);
+        await new RunExecutor(new FakeActions(), Limits, () => Now, new FakeApprovals()).ExecuteAsync(run, CancellationToken.None);
+        var row = new VantraFlow.Api.Models.RunRow(1, run.Id, run.WorkspaceId, run.FlowId, "Refunds", 1, def.ToJson(), "{}", run.Data.ToJsonString(), run.Position, 0, run.Status,
+            false, null, null, 0, null, Now, null, null, run.NotBefore);
+        Assert.Equal("approval", RunsController.WaitingFor(row));
+        Assert.Null(RunsController.WaitingFor(row with { Status = RunStatuses.Succeeded }));
+        Assert.Equal("retry", RunsController.WaitingFor(row with { Status = RunStatuses.Queued, Attempt = 1 }));
+    }
+
+    [Fact]
     public void Validation_wants_a_title_approvers_and_no_loop_around_it()
     {
         var step = NewBuild.Approval("a1");

@@ -86,7 +86,18 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     public static RunSummaryDto Summary(RunRow r) =>
         new(r.Id, r.FlowId, r.FlowName, r.Status, r.Test, r.ReplayOf, Iso(r.StartedAt), Iso(r.FinishedAt), r.DurationMs, r.Error, r.StepCount,
             r.Status is RunStatuses.Waiting or RunStatuses.Queued && r.NotBefore > DateTime.UtcNow ? Iso(r.NotBefore) : null,
-            r.Test ? null : r.FlowVersion); // a test runs the builder's unsaved copy
+            r.Test ? null : r.FlowVersion, // a test runs the builder's unsaved copy
+            WaitingFor(r));
+
+    /// <summary>What a waiting run waits on: the step it's at (an approval, a wait until, a delay), or a retry of an action.</summary>
+    public static string? WaitingFor(RunRow r)
+    {
+        if (r.Status != RunStatuses.Waiting && !(r.Status == RunStatuses.Queued && r.Attempt > 0)) return null;
+        if (r.Attempt > 0 && r.Status == RunStatuses.Queued) return "retry";
+        return FlowDefinition.Parse(r.Definition) is { } def && Positions.StepAt(def, r.Position) is { } step
+            ? step.Type is StepTypes.Approval or StepTypes.Wait or StepTypes.Delay ? step.Type : null
+            : null;
+    }
 
     private static JsonNode? Parse(string? json)
     {

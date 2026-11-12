@@ -138,9 +138,10 @@ public sealed record FlowDto(
 /// </summary>
 public sealed record FlowAlertsDto(bool On, bool? Own, bool WorkspaceDefault, string? ToName, bool ToMe);
 
+/// <summary>A run in the list. <c>WaitingFor</c>: what a waiting run waits on (approval, wait, delay) or a retry; else null.</summary>
 public sealed record RunSummaryDto(
     string Id, string FlowId, string FlowName, string Status, bool Test, string? ReplayOf, string StartedAt, string? FinishedAt,
-    int? DurationMs, string? Error, int StepCount, string? NextAt, int? FlowVersion = null);
+    int? DurationMs, string? Error, int StepCount, string? NextAt, int? FlowVersion = null, string? WaitingFor = null);
 
 /// <summary>A saved version in the list: <c>Current</c> is the flow as it is now.</summary>
 public sealed record FlowVersionDto(int Version, string Name, string SavedAt, string? SavedByName, int StepCount, string? Note, bool Current);
