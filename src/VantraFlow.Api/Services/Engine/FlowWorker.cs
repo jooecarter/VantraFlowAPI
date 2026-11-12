@@ -39,7 +39,9 @@ public sealed class FlowSignal
 /// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), and send the
 /// failure alerts that are due (<see cref="FailureAlerts"/>, db/002).</item>
 /// <item><b>Webhooks</b>: outgoing deliveries due (db/012), beside the loop (<see cref="Developer.WebhookDispatcher"/>).</item>
-/// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008).</item>
+/// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008), and the daily failure
+/// digests that are due (<see cref="Reliability"/>, db/010).</item>
+/// <item><b>After a failed run</b>: auto-pause, for a flow set to switch off after N failures in a row (db/010).</item>
 /// <item><b>Hourly</b>: prune old claims, dead events, and runs older than <c>Flow:KeepRunsDays</c>.</item>
 /// </list>
 /// Before db/001 it checks once a minute and does nothing else. Multi-instance safe; App Service needs
@@ -51,10 +53,13 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
     public static readonly TimeSpan IdleTick = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan Lease = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan ScheduleWindow = TimeSpan.FromMinutes(3);
+    /// <summary>How long one go at a run keeps starting steps: with a step's longest timeout, well inside <see cref="Lease"/>.</summary>
+    public static readonly TimeSpan Slice = TimeSpan.FromMinutes(2);
     private readonly string me = Id();
     private DateTime nextMinute = DateTime.MinValue;
     private DateTime nextPrune = DateTime.MinValue;
     private DateTime nextPlans = DateTime.MinValue;
+    private DateTime nextDigest = DateTime.MinValue;
     private bool waitingLogged;
     // Outgoing webhooks (db/012) are sent beside the loop, so a slow endpoint never holds up runs.
     private Task deliveries = Task.CompletedTask;
@@ -149,7 +154,7 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             var state = State(run);
             try
             {
-                var logs = state is null ? [] : await executor.ExecuteAsync(state, ct, maxSteps: 10);
+                var logs = state is null ? [] : await executor.ExecuteAsync(state, ct, maxSteps: 10, slice: Slice);
                 state ??= Broken(run);
                 var savedAt = DateTime.UtcNow;
                 await engine.SaveSliceAsync(state, logs, run.StartedAt, savedAt);
@@ -160,6 +165,7 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
                         Status = state.Status, Error = state.Error, StepCount = state.StepCount, FinishedAt = savedAt,
                         DurationMs = EngineRepository.DurationOf(run.StartedAt, savedAt),
                     });
+                if (state.Status == RunStatuses.Failed && !state.Test) await AutoPauseAsync(sp, state, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -192,6 +198,14 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             nextPlans = now.AddMinutes(5);
             try { await sp.GetRequiredService<Billing.Plans>().SweepAsync(DateTime.UtcNow, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Plans sweep failed"); }
+        }
+
+        // The daily failure digest (db/010), every five minutes: once a day per workspace, from 08:00 in its time zone.
+        if (now >= nextDigest)
+        {
+            nextDigest = now.AddMinutes(5);
+            try { if (await sp.GetRequiredService<FlowSchema>().ReliabilityReadyAsync()) await sp.GetRequiredService<Reliability>().SendDigestsAsync(DateTime.UtcNow, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Failure digest tick failed"); }
         }
 
         // 4. Housekeeping.
@@ -234,6 +248,17 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex) { log.LogWarning(ex, "Webhook deliveries failed"); }
+    }
+
+    /// <summary>After a failed run: auto-pause its flow when it's set to (db/010). Never fails the tick.</summary>
+    private async Task AutoPauseAsync(IServiceProvider sp, RunState state, CancellationToken ct)
+    {
+        try
+        {
+            if (await sp.GetRequiredService<FlowSchema>().ReliabilityReadyAsync())
+                await sp.GetRequiredService<Reliability>().AfterFailureAsync(state.WorkspaceId, state.FlowId, state.Error, DateTime.UtcNow);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Auto-pause check for flow {Flow} failed", state.FlowId); }
     }
 
     private async Task ScheduleAsync(IServiceProvider sp, DateTime now, CancellationToken ct)

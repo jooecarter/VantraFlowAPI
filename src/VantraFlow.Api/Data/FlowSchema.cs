@@ -120,6 +120,25 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WebhookDeli
         return developerReady;
     }
 
+    /// <summary>db/010 (auto-pause and the failure digest): the column it adds last, by name in <c>sys.columns</c>.</summary>
+    public const string ReliabilityProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'flow.Workspaces') AND name = N'DigestSentOn')
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool reliabilityReady;
+    private DateTime reliabilityCheckedAt = DateTime.MinValue;
+
+    /// <summary>Has db/010 run? Until it has, the daily failure digest and auto-pause hide themselves (503 <c>not_ready</c>).</summary>
+    public async Task<bool> ReliabilityReadyAsync()
+    {
+        if (reliabilityReady) return true;
+        if (DateTime.UtcNow - reliabilityCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        reliabilityReady = await conn.ExecuteScalarAsync<bool>(ReliabilityProbeSql);
+        reliabilityCheckedAt = DateTime.UtcNow;
+        return reliabilityReady;
+    }
+
     private volatile bool invitesReady;
     private DateTime invitesCheckedAt = DateTime.MinValue;
 
@@ -196,4 +215,6 @@ public interface IWorkspaceFeatures
     Task<bool> AlertsReadyAsync();
     /// <summary>db/005: the workspace look and invitations.</summary>
     Task<bool> InvitesReadyAsync();
+    /// <summary>db/010: the daily failure digest and auto-pause (not there unless a store says so).</summary>
+    Task<bool> ReliabilityReadyAsync() => Task.FromResult(false);
 }

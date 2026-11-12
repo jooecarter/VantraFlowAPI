@@ -14,6 +14,7 @@ namespace VantraFlow.Api.Controllers;
 ///                                                       → newest first; q: a run id or text in the trigger data
 /// GET  api/w/{ws}/runs/{id}                             → the run, its trigger data, and each step's input, output, error and duration
 /// POST api/w/{ws}/runs/{id}/replay                      → a new run of the flow as it is now, from the same trigger data
+/// POST api/w/{ws}/runs/{id}/retry                       → "Retry from here": a failed run again from the step it failed at, reusing earlier outputs
 /// POST api/w/{ws}/runs/{id}/cancel                      → a queued or waiting run stops
 /// </code>
 /// </summary>
@@ -64,6 +65,38 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
         return StatusCode(202, Summary(replay));
     }
 
+    /// <summary>
+    /// "Retry from here" (<see cref="RetryRules"/>): a new run of the flow as it is now, starting at the step the failed
+    /// run stopped at, with what the steps before it handed on. It counts as a run, as a replay does. 409 when the run
+    /// didn't fail, or the step isn't in the flow any more.
+    /// </summary>
+    [HttpPost("api/w/{workspaceId:guid}/runs/{id}/retry")]
+    public async Task<IActionResult> Retry(Guid workspaceId, string id)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (await engine.RunAsync(workspaceId, id) is not { } run) return NotFound(new { error = "That run isn't in the log any more." });
+        if (run.Status != RunStatuses.Failed) return Conflict(new { error = "Only a failed run can be retried from a step.", code = "not_failed" });
+        if (await flows.GetAsync(workspaceId, run.FlowId) is not { } flow) return NotFound(new { error = "Its flow has been deleted." });
+        if (FlowDefinition.Parse(flow.Definition) is not { } def) return BadRequest(new { error = "The flow couldn't be read." });
+        JsonObject? context;
+        try { context = JsonNode.Parse(run.Context ?? "{}") as JsonObject; } catch (JsonException) { context = null; }
+        var newId = Services.Connectors.FlowSecrets.NewRowId("frn_");
+        var now = DateTime.UtcNow;
+        if (RetryRules.Resume(def, context, newId, run.Id, now, run.Test) is not { } start)
+            return Conflict(new { error = "The step it stopped at isn't in the flow any more. Replay the whole run instead.", code = "step_gone" });
+        var ws = (await Workspaces.GetAsync(workspaceId))!;
+        if (await plans.AdmitRunAsync(ws, def, now) is { } refused)
+            return refused.Code == Services.Billing.PlanCodes.Premium
+                ? StatusCode(402, new { error = refused.Message, code = refused.Code, upgradeTo = refused.UpgradeTo })
+                : StatusCode(429, new { error = refused.Message, code = "quota", upgradeTo = refused.UpgradeTo });
+        var retry = new RunRow(0, newId, ws.Id, flow.Id, flow.Name, flow.Version, def.ToJson(), run.TriggerData, start.Data.ToJsonString(), start.Position, 0,
+            RunStatuses.Queued, run.Test, run.Id, null, 0, null, now, null, null, now);
+        await engine.InsertRunAsync(retry);
+        signal.Poke();
+        return StatusCode(202, Summary(retry));
+    }
+
     [HttpPost("api/w/{workspaceId:guid}/runs/{id}/cancel")]
     public async Task<IActionResult> Cancel(Guid workspaceId, string id)
     {
@@ -79,9 +112,16 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     {
         if (await engine.RunAsync(workspaceId, id) is not { } run) return null;
         var steps = await engine.StepsAsync(run.Id);
+        // "Retry from here": the step a failed run would start again at, and the step a retry started at.
+        var def = FlowDefinition.Parse(run.Definition);
+        JsonObject? context = null;
+        try { context = JsonNode.Parse(run.Context ?? "{}") as JsonObject; } catch (JsonException) { }
+        var retryStep = run.Status == RunStatuses.Failed && def is not null ? RetryRules.StepOf(def, context) : null;
+        var retriedFrom = RetryRules.RetriedFrom(context) is { } from && def?.AllSteps().FirstOrDefault(x => x.Id == from) is { } fromStep
+            ? new RetriedFromDto(fromStep.Id, RunExecutor.NameOf(fromStep)) : null;
         return new RunDetailDto(Summary(run), Parse(run.TriggerData),
             steps.Select(s => new RunStepDto(s.Seq, s.StepId, s.Type, s.App, s.StepAction, s.Name, s.Status, s.Attempt, Parse(s.Input), Parse(s.Output), s.Error,
-                Iso(s.StartedAt), s.DurationMs)).ToList(), Parse(run.Definition));
+                Iso(s.StartedAt), s.DurationMs)).ToList(), Parse(run.Definition), retryStep, retriedFrom);
     }
 
     public static RunSummaryDto Summary(RunRow r) =>
