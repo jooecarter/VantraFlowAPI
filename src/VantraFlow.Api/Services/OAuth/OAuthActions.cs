@@ -37,6 +37,7 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
             ("google", "sheets.row.add") => await SheetAddAsync(call.WorkspaceId, input, ct),
             ("google", "sheets.row.find") => await SheetFindAsync(call.WorkspaceId, input, ct),
             ("google", "sheets.row.update") => await SheetUpdateAsync(call.WorkspaceId, input, ct),
+            ("stripe" or "hubspot" or "xero", _) => await new BusinessActions(connections).RunAsync(call, ct),
             _ => StepOutcome.Fail("This step isn't something Vantra Flow can do."),
         };
     }
@@ -353,6 +354,8 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
                 var headers = (await RowsAsync(ws, sheet, "1:1", ct)).FirstOrDefault() ?? [];
                 return new JsonArray(headers.Where(h => h.Trim().Length > 0).Select(h => (JsonNode)h).ToArray());
             }
+            case ("hubspot", "pipelines"):
+                return await new BusinessActions(connections).HubSpotPipelinesAsync(ws, ct);
             default:
                 throw new AppRefusedException(404, "There's nothing to look up there.", "no_lookup");
         }

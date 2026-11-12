@@ -17,6 +17,9 @@ public static class EventSources
     public const string Slack = "slack";
     public const string Microsoft = "microsoft";
     public const string Google = "google";
+    public const string Stripe = "stripe";
+    public const string HubSpot = "hubspot";
+    public const string Xero = "xero";
 }
 
 /// <summary>

@@ -91,6 +91,22 @@ public sealed class OAuthConnections(
     {
         var raw = await repo.TakePendingAsync(pendingId, workspaceId, provider.Key, sub, DateTime.UtcNow);
         if (raw is null || secrets.Unprotect(raw, workspaceId, pendingId) is not { } json || JsonSerializer.Deserialize<OAuthGrant>(json) is not { } grant) return null;
+        return await SaveAsync(provider, workspaceId, grant, sub, name, ct);
+    }
+
+    /// <summary>
+    /// Connects with an API key or token an owner or admin pasted (Stripe, a HubSpot private app): checked with the
+    /// provider first, then kept sealed like a sign-in's token. Throws <see cref="AppRefusedException"/> with why when the
+    /// provider won't take it.
+    /// </summary>
+    public async Task<OAuthConnectionRow> ConnectKeyAsync(OAuthProvider provider, Guid workspaceId, string key, string sub, string? name, CancellationToken ct)
+    {
+        var grant = await provider.VerifyKeyAsync(key, ct);
+        return await SaveAsync(provider, workspaceId, grant, sub, name, ct);
+    }
+
+    private async Task<OAuthConnectionRow> SaveAsync(OAuthProvider provider, Guid workspaceId, OAuthGrant grant, string sub, string? name, CancellationToken ct)
+    {
         if (await repo.LiveAsync(workspaceId, provider.Key) is { } old) await RevokeRemoteAsync(old, ct);
         var id = Guid.NewGuid();
         var row = new OAuthConnectionRow(id, workspaceId, provider.Key, Clip(grant.AccountId, 200), Clip(grant.AccountName, 200), grant.AccountEmail is null ? null : Clip(grant.AccountEmail, 256),
@@ -112,7 +128,7 @@ public sealed class OAuthConnections(
     public async Task<OAuthSession> OpenAsync(Guid workspaceId, string providerKey, CancellationToken ct, bool forceRefresh = false)
     {
         var provider = providers.For(providerKey) ?? throw new AppRefusedException(404, "Vantra Flow doesn't connect to that app.", "no_app");
-        if (!await schema.ConnectorsReadyAsync())
+        if (!await schema.ConnectorsReadyAsync() || (OAuthProviders.NeedsSteps(providerKey) && !await schema.StepsReadyAsync()))
             throw new AppRefusedException(409, $"{provider.Name} arrives with the next server update.", "not_connected");
         var row = await repo.LiveAsync(workspaceId, providerKey)
             ?? throw new AppRefusedException(409, $"{provider.Name} isn't connected. Connect it from Connections.", "not_connected");

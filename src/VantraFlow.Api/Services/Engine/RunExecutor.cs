@@ -81,7 +81,7 @@ public sealed record StepLog(
 /// tests drive it directly.
 /// </para>
 /// </summary>
-public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<DateTime>? clock = null)
+public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<DateTime>? clock = null, IApprovalGate? approvals = null)
 {
     private readonly Func<DateTime> now = clock ?? (() => DateTime.UtcNow);
 
@@ -101,6 +101,8 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         StepTypes.Filter => "Only continue if",
         StepTypes.Formatter => "Format",
         StepTypes.Variable => "Set variable",
+        StepTypes.Wait => "Wait until",
+        StepTypes.Approval => "Approval",
         _ => FlowCatalog.Action(s.App, s.Action)?.Title ?? "Step",
     };
 
@@ -142,6 +144,12 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
                 case StepTypes.Variable:
                     if (!Transform(s, step, started, logs)) return logs;
                     break;
+                case StepTypes.Wait:
+                    if (!await WaitAsync(s, step, started, logs, ct)) return logs;
+                    break;
+                case StepTypes.Approval:
+                    if (!await ApprovalAsync(s, step, started, logs, ct)) return logs;
+                    break;
                 default:
                     if (!await ActionAsync(s, step, started, logs, ct)) return logs;
                     break;
@@ -169,6 +177,34 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
             logs.Add(Log(step, name, "succeeded", s.Attempt, null, s.Steps[step.Id], null, started, 0));
             s.Position = Positions.After(s.Definition, s.Position!);
             return true;
+        }
+        if (DelayRules.IsUntil(step.Config))
+        {
+            var input = Tokens.RenderNode(step.Config, s.Data) as JsonObject ?? new JsonObject();
+            string? why = null;
+            if (DelayRules.UntilOf(input, ZoneOf(s)) is not { } at) why = $"“{Tokens.Text(input["at"])}” isn't a date and time.";
+            else if (at - started > FlowLimits.MaxDelay) why = "A delay can wait at most 30 days.";
+            else if (s.Test || at <= started)
+            {
+                s.Steps[step.Id] = s.Test ? new JsonObject { ["skipped"] = true, ["until"] = at.ToString("o") } : new JsonObject { ["waitedUntil"] = at.ToString("o") };
+                logs.Add(Log(step, name, s.Test ? "skipped" : "succeeded", 0, input, s.Steps[step.Id],
+                    s.Test ? "Delays are skipped in a test." : "That time had already passed, so the run carried straight on.", started, 0));
+                s.Position = Positions.After(s.Definition, s.Position!);
+                return true;
+            }
+            else
+            {
+                s.Steps[step.Id] = new JsonObject { ["until"] = at.ToString("o") };
+                logs.Add(Log(step, name, "waiting", 0, input, s.Steps[step.Id], null, started, 0));
+                s.Status = RunStatuses.Waiting;
+                s.NotBefore = at;
+                return false;
+            }
+            logs.Add(Log(step, name, "failed", 0, input, null, why, started, 0));
+            if (ItemFailed(s, why!, started, logs)) return true;
+            s.Status = RunStatuses.Failed;
+            s.Error = $"{name}: {why}";
+            return false;
         }
         var wait = DefinitionRules.DelayOf(step.Config) ?? TimeSpan.Zero;
         if (s.Test || wait <= TimeSpan.Zero)
@@ -312,6 +348,170 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         if (ItemFailed(s, outcome.Error ?? "Failed.", started, logs)) return true;
         s.Status = RunStatuses.Failed;
         s.Error = $"{name}: {outcome.Error}";
+        return false;
+    }
+
+    private static string? ZoneOf(RunState s) => Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null;
+
+    // ── Wait until ──
+
+    /// <summary>
+    /// "Wait until": runs the refresh step again (when one is named), checks the condition, and carries on when it holds;
+    /// otherwise waits until the next check, or past the deadline goes on (or stops) with <c>met: false</c>. False when the
+    /// run now waits or stops.
+    /// </summary>
+    private async Task<bool> WaitAsync(RunState s, StepDef step, DateTime started, List<StepLog> logs, CancellationToken ct)
+    {
+        var name = NameIn(s, step);
+        var prior = s.Steps[step.Id] as JsonObject;
+        var first = prior is null || !(prior["waiting"] is JsonValue w && w.TryGetValue<bool>(out var on) && on);
+        var deadline = !first && Utc(prior!["deadline"]) is { } d ? d : started.Add(WaitRules.TimeoutOf(step.Config));
+        var checks = first ? 0 : Int(prior!["checks"]);
+        string? refreshError = null;
+        if (WaitRules.RefreshOf(step.Config) is { } rid && s.Definition.AllSteps().FirstOrDefault(x => x.Id == rid) is { Type: StepTypes.Action } again)
+        {
+            var rin = Tokens.RenderNode(again.Config, s.Data) as JsonObject ?? new JsonObject();
+            StepOutcome o;
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                timeout.CancelAfter(TimeSpan.FromSeconds(limits.StepTimeoutSeconds));
+                try { o = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, again, rin, s.Test, SubFlowRules.DepthOf(s.Data), ZoneOf(s)), timeout.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { o = StepOutcome.Fail($"No answer within {limits.StepTimeoutSeconds} seconds.", true); }
+            }
+            s.StepCount++;
+            if (o.Ok) s.Steps[rid] = o.Output?.DeepClone() ?? new JsonObject();
+            else refreshError = o.Error;
+        }
+        checks++;
+        var cond = Conditions.Parse(step.Config["condition"]);
+        var met = cond is not null && Conditions.Evaluate(cond, s.Data);
+        var explained = Conditions.Explain(cond, s.Data);
+        if (met || s.Test || started >= deadline)
+        {
+            var timedOut = !met && !s.Test;
+            var output = new JsonObject { ["met"] = met, ["timedOut"] = timedOut, ["checks"] = checks, ["checkedAt"] = started.ToString("o") };
+            s.Steps[step.Id] = output;
+            var note = met ? null
+                : s.Test ? "A test checks once and doesn't wait."
+                : WaitRules.Stops(step.Config) ? "It didn't hold in time, so the run stopped here." : "It didn't hold in time, so the run carried on.";
+            if (refreshError is not null && !met) note = $"{note} The step it runs again failed: {refreshError}";
+            logs.Add(Log(step, name, "succeeded", 0, explained, output, note, started, 0));
+            if (timedOut && WaitRules.Stops(step.Config))
+            {
+                s.Position = null;
+                s.Status = RunStatuses.Succeeded;
+                return false;
+            }
+            s.Position = Positions.After(s.Definition, s.Position!);
+            return true;
+        }
+        var next = started.Add(WaitRules.EveryOf(step.Config));
+        if (next > deadline) next = deadline;
+        var state = new JsonObject { ["waiting"] = true, ["deadline"] = deadline.ToString("o"), ["checks"] = checks, ["nextCheck"] = next.ToString("o") };
+        if (refreshError is not null) state["lastError"] = refreshError.Length > 300 ? refreshError[..300] : refreshError;
+        s.Steps[step.Id] = state;
+        if (first) logs.Add(Log(step, name, "waiting", 0, explained, state, null, started, 0));
+        s.Status = RunStatuses.Waiting;
+        s.NotBefore = next;
+        return false;
+    }
+
+    // ── Approval ──
+
+    /// <summary>How often a run waiting on an approval looks again, should the decision's wake-up be missed.</summary>
+    public static readonly TimeSpan ApprovalRecheck = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// "Approval": the first time, asks the approvers and waits; each time it comes round, reads the decision and goes
+    /// down Approved or Rejected, or past the deadline Timed out. False when the run now waits or fails.
+    /// </summary>
+    private async Task<bool> ApprovalAsync(RunState s, StepDef step, DateTime started, List<StepLog> logs, CancellationToken ct)
+    {
+        var name = NameIn(s, step);
+        ApprovalRules.Sides(step);
+        if (s.Steps[step.Id] is JsonObject st && st["pending"] is JsonValue pv && pv.TryGetValue<bool>(out var pending) && pending
+            && Tokens.Text(st["approvalId"]) is { Length: > 0 } id)
+        {
+            var until = Utc(st["until"]) ?? started;
+            var now = approvals is null ? null : await approvals.StateAsync(s.WorkspaceId, id, ct);
+            if (now is null) return FailApproval(s, step, name, "The approval request is gone.", started, logs);
+            if (now.Status == "cancelled") return FailApproval(s, step, name, "The approval request was cancelled.", started, logs);
+            string decision;
+            if (now.Status == "pending")
+            {
+                if (started < until)
+                {
+                    s.Status = RunStatuses.Waiting;
+                    s.NotBefore = started.Add(ApprovalRecheck) < until ? started.Add(ApprovalRecheck) : until;
+                    return false;
+                }
+                await approvals!.ExpireAsync(id, started);
+                decision = "timed_out";
+            }
+            else decision = now.Status switch { "approved" => "approved", "rejected" => "rejected", _ => "timed_out" };
+            var output = new JsonObject
+            {
+                ["decision"] = decision,
+                ["approved"] = decision == "approved",
+                ["decidedBy"] = decision == "timed_out" ? null : now.DecidedByName,
+                ["decidedAt"] = (now.DecidedAt ?? started).ToString("o"),
+                ["comment"] = now.Comment,
+                ["via"] = now.Via,
+                ["approvalId"] = id,
+                ["requestedAt"] = st["requestedAt"]?.DeepClone(),
+                ["approvers"] = st["approvers"]?.DeepClone(),
+            };
+            s.Steps[step.Id] = output;
+            var path = ApprovalRules.PathOf(decision);
+            logs.Add(Log(step, name, "succeeded", 0, new JsonObject { ["title"] = Tokens.Text(st["title"]), ["approvers"] = st["approvers"]?.DeepClone() }, output,
+                decision == "timed_out" ? "No one decided in time." : null, started, 0));
+            s.Position = Positions.EnterPath(s.Definition, s.Position!, path);
+            return true;
+        }
+
+        var input = Tokens.RenderNode(step.Config, s.Data) as JsonObject ?? new JsonObject();
+        var title = Tokens.Text(input["title"]).Trim();
+        if (title.Length > 200) title = title[..200];
+        var details = Tokens.Text(input["details"]).Trim();
+        if (details.Length > 4000) details = details[..4000];
+        if (s.Test)
+        {
+            var output = new JsonObject
+            {
+                ["decision"] = "approved", ["approved"] = true, ["decidedBy"] = "A test", ["decidedAt"] = started.ToString("o"), ["test"] = true,
+            };
+            s.Steps[step.Id] = output;
+            logs.Add(Log(step, name, "succeeded", 0, new JsonObject { ["title"] = title, ["details"] = details }, output,
+                "A test takes the Approved path without asking anyone.", started, 0));
+            s.Position = Positions.EnterPath(s.Definition, s.Position!, ApprovalRules.Approved);
+            return true;
+        }
+        if (approvals is null) return FailApproval(s, step, name, "Approvals aren't available on this server yet.", started, logs);
+        var expires = started.Add(ApprovalRules.TimeoutOf(step.Config));
+        ApprovalState asked;
+        try
+        {
+            asked = await approvals.RequestAsync(new ApprovalAsk(s.WorkspaceId, s.FlowId, s.Id, step.Id, title, details.Length > 0 ? details : null,
+                ApprovalRules.ApproversOf(step.Config), expires), ct);
+        }
+        catch (ApprovalUnavailableException e) { return FailApproval(s, step, name, e.Message, started, logs); }
+        var state = new JsonObject
+        {
+            ["pending"] = true, ["approvalId"] = asked.Id, ["until"] = asked.ExpiresAt.ToString("o"), ["requestedAt"] = started.ToString("o"), ["title"] = title,
+            ["approvers"] = new JsonArray(asked.ApproverNames.Select(n => (JsonNode)n).ToArray()), ["notified"] = asked.Notified,
+        };
+        s.Steps[step.Id] = state;
+        logs.Add(Log(step, name, "waiting", 0, new JsonObject { ["title"] = title, ["details"] = details }, state, null, started, 0));
+        s.Status = RunStatuses.Waiting;
+        s.NotBefore = started.Add(ApprovalRecheck) < asked.ExpiresAt ? started.Add(ApprovalRecheck) : asked.ExpiresAt;
+        return false;
+    }
+
+    private static bool FailApproval(RunState s, StepDef step, string name, string why, DateTime started, List<StepLog> logs)
+    {
+        logs.Add(Log(step, name, "failed", 0, null, null, why, started, 0));
+        s.Status = RunStatuses.Failed;
+        s.Error = $"{name}: {why}";
         return false;
     }
 

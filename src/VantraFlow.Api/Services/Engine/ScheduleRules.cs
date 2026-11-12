@@ -10,6 +10,7 @@ namespace VantraFlow.Api.Services.Engine;
 /// at least 5) or every N hours on the hour (from midnight).</item>
 /// <item><c>daily</c> <c>{ time: "HH:mm" }</c>.</item>
 /// <item><c>weekly</c> <c>{ time, days: ["mon", …] }</c>.</item>
+/// <item><c>monthly</c> <c>{ time, day: 1–31 | "last" }</c>: a day past the month's end (the 31st in June) is its last day.</item>
 /// </list>
 /// The worker asks once a minute for the slots in the last few minutes (<see cref="DueSlots"/>); each slot's key is
 /// claimed once (flow.FiredKeys), so a slow tick or a second instance never fires one twice.
@@ -33,8 +34,10 @@ public static class ScheduleRules
                 break;
             case "daily":
             case "weekly":
+            case "monthly":
                 if (Time(t.Config["time"]) is null) yield return new(null, "Set a time, like 09:00.");
                 if (t.Event == "weekly" && DaysOf(t.Config["days"]).Count == 0) yield return new(null, "Choose at least one day.");
+                if (t.Event == "monthly" && DayOfMonth(t.Config["day"]) is null) yield return new(null, "Choose a day of the month.");
                 break;
         }
     }
@@ -78,16 +81,21 @@ public static class ScheduleRules
             case "weekly":
                 return Time(t.Config["time"]) is { } w && local.Hour == w.Hours && local.Minute == w.Minutes
                     && DaysOf(t.Config["days"]).Contains(Days[(int)local.DayOfWeek]);
+            case "monthly":
+                if (Time(t.Config["time"]) is not { } mt || local.Hour != mt.Hours || local.Minute != mt.Minutes || DayOfMonth(t.Config["day"]) is not { } day) return false;
+                var last = DateTime.DaysInMonth(local.Year, local.Month);
+                return local.Day == (day == 0 ? last : Math.Min(day, last));
             default:
                 return false;
         }
     }
 
-    /// <summary>The next time it fires after <paramref name="nowUtc"/> (for the studio's "Next run"), within 8 days.</summary>
+    /// <summary>The next time it fires after <paramref name="nowUtc"/> (for the studio's "Next run"), within 8 days (a monthly one, 32).</summary>
     public static DateTime? Next(TriggerDef t, string? timeZone, DateTime nowUtc)
     {
         var zone = Zone(timeZone);
-        for (var m = Minute(nowUtc).AddMinutes(1); m < nowUtc.AddDays(8); m = m.AddMinutes(1))
+        var horizon = nowUtc.AddDays(t.Event == "monthly" ? 32 : 8);
+        for (var m = Minute(nowUtc).AddMinutes(1); m < horizon; m = m.AddMinutes(1))
             if (Matches(t, TimeZoneInfo.ConvertTimeFromUtc(m, zone))) return m;
         return null;
     }
@@ -104,6 +112,11 @@ public static class ScheduleRules
     public static TimeSpan? Time(JsonNode? n) =>
         n is JsonValue v && v.TryGetValue<string>(out var s)
         && TimeSpan.TryParseExact(s.Trim(), ["hh\\:mm", "h\\:mm"], CultureInfo.InvariantCulture, out var t) && t < TimeSpan.FromDays(1) ? t : null;
+
+    /// <summary>A monthly schedule's day: 1–31, or 0 for "last".</summary>
+    public static int? DayOfMonth(JsonNode? n) =>
+        Tokens.Text(n).Trim().ToLowerInvariant() is var s && s == "last" ? 0
+        : int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out var d) && d is >= 1 and <= 31 ? d : null;
 
     public static IReadOnlySet<string> DaysOf(JsonNode? n) =>
         n is JsonArray a ? a.Select(x => Tokens.Text(x).ToLowerInvariant()).Where(Days.Contains).ToHashSet() : new HashSet<string>();

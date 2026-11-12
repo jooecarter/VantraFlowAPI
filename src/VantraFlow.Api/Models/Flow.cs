@@ -74,6 +74,19 @@ public sealed record PollDueRow(
     string FlowId, Guid WorkspaceId, string Provider, string TriggerEvent, string Definition, DateTime UpdatedAt, string? Fingerprint, string? Bookmark,
     DateTime? NextPollAt, int? Failures);
 
+/// <summary>A workspace's named secret (db/007): sealed, its last four characters as a hint.</summary>
+public sealed record SecretRow(
+    string Id, Guid WorkspaceId, string Name, byte[] Cipher, string? Hint, string CreatedBy, string? CreatedByName, DateTime CreatedAt, DateTime UpdatedAt,
+    DateTime? LastUsedAt);
+
+/// <summary>An Approval step's request (db/007). <c>Approvers</c>: a JSON list of <c>{ id, name, email }</c>.</summary>
+public sealed record ApprovalRow(
+    string Id, Guid WorkspaceId, string FlowId, string FlowName, string RunId, string StepId, string Title, string? Details, string Approvers, string Status,
+    string? DecidedBy, string? DecidedByName, DateTime? DecidedAt, string? DecidedVia, string? Comment, DateTime RequestedAt, DateTime ExpiresAt);
+
+/// <summary>The newest payload a webhook trigger received (db/007).</summary>
+public sealed record HookSampleRow(string Payload, DateTime ReceivedAt);
+
 // ── Roles ─────────────────────────────────────────────────────────────────
 
 public static class FlowRoles
@@ -125,9 +138,10 @@ public sealed record FlowDto(
 /// </summary>
 public sealed record FlowAlertsDto(bool On, bool? Own, bool WorkspaceDefault, string? ToName, bool ToMe);
 
+/// <summary>A run in the list. <c>WaitingFor</c>: what a waiting run waits on (approval, wait, delay) or a retry; else null.</summary>
 public sealed record RunSummaryDto(
     string Id, string FlowId, string FlowName, string Status, bool Test, string? ReplayOf, string StartedAt, string? FinishedAt,
-    int? DurationMs, string? Error, int StepCount, string? NextAt, int? FlowVersion = null);
+    int? DurationMs, string? Error, int StepCount, string? NextAt, int? FlowVersion = null, string? WaitingFor = null);
 
 /// <summary>A saved version in the list: <c>Current</c> is the flow as it is now.</summary>
 public sealed record FlowVersionDto(int Version, string Name, string SavedAt, string? SavedByName, int StepCount, string? Note, bool Current);
@@ -142,7 +156,25 @@ public sealed record RunStepDto(
 public sealed record RunDetailDto(RunSummaryDto Run, JsonNode? Trigger, IReadOnlyList<RunStepDto> Steps, JsonNode? Definition);
 
 /// <summary>An outside app (Slack, Microsoft 365, Google): set up on this server (<c>Configured</c>), db/004 in place (<c>Ready</c>), and the workspace's connection.</summary>
-public sealed record OAuthAppDto(string Provider, string Name, bool Configured, bool Ready, OAuthConnectionDto? Connection);
+/// <remarks>
+/// <c>Connect</c>: how it connects — <c>oauth</c> (a sign-in), <c>key</c> (an API key or token pasted by an owner or admin:
+/// Stripe) or <c>both</c> (HubSpot: a sign-in when this server has the app's keys, else a private app token).
+/// <c>Premium</c>: a paid-plan app (plans may gate it; nothing here does).
+/// </remarks>
+public sealed record OAuthAppDto(string Provider, string Name, bool Configured, bool Ready, OAuthConnectionDto? Connection, string Connect = "oauth", bool Premium = false);
+
+public sealed record OAuthKeyBody(string? Key);
+
+/// <summary>A secret as the studio sees it: never its value, only its last four characters.</summary>
+public sealed record SecretDto(string Id, string Name, string? Hint, string? CreatedByName, string CreatedAt, string UpdatedAt, string? LastUsedAt);
+
+/// <summary>Someone who may decide an approval.</summary>
+public sealed record ApproverDto(string Id, string? Name, string? Email);
+
+/// <summary>An approval as the inbox, the run and the email link show it. <c>CanDecide</c>: the viewer is one of its approvers and it's still open.</summary>
+public sealed record ApprovalDto(
+    string Id, string FlowId, string FlowName, string RunId, string StepId, string Title, string? Details, IReadOnlyList<ApproverDto> Approvers, string Status,
+    string? DecidedByName, string? DecidedAt, string? DecidedVia, string? Comment, string RequestedAt, string ExpiresAt, bool CanDecide);
 
 public sealed record OAuthConnectionDto(
     string Id, string Provider, string AccountName, string? AccountEmail, string Status, string? LastError, string? ConnectedByName, string ConnectedAt,
