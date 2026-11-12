@@ -38,7 +38,7 @@ public sealed record TierLimits(string Tier, int Runs, int? ActiveFlows, bool Pr
 /// Billing:Tiers:{tier}:ActiveFlows     free 3; the others unlimited (0 or empty)
 /// Billing:Tiers:{tier}:Premium         pro and business
 /// Billing:Tiers:{tier}:AiCredits       pro 200, business 1,000 (a month)
-/// Billing:PremiumApps                  "slack,microsoft,google,http,webhook,flow" (apps whose steps and triggers are premium)
+/// Billing:PremiumApps                  "slack,microsoft,google,http,webhook,flow,smtp" (apps whose steps and triggers are premium; smtp: Send email from an SMTP mailbox)
 /// Billing:PremiumSteps                 "paths,approval" (step types that are premium)
 /// </code>
 /// The amounts people pay are not here: they live in Stripe (prices under <c>Stripe:Prices:{key}</c>), with the
@@ -57,7 +57,7 @@ public sealed class PlanCatalog
     };
 
     /// <summary>The apps the brief names premium: the outside apps, HTTP requests, webhooks and sub-flows.</summary>
-    public static readonly IReadOnlyList<string> DefaultPremiumApps = ["slack", "microsoft", "google", "http", "webhook", "flow"];
+    public static readonly IReadOnlyList<string> DefaultPremiumApps = ["slack", "microsoft", "google", "http", "webhook", "flow", "smtp"];
     /// <summary>Step types that are premium whatever app they're in: paths and approvals.</summary>
     public static readonly IReadOnlyList<string> DefaultPremiumSteps = [StepTypes.Paths, "approval"];
 

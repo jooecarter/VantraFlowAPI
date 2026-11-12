@@ -344,6 +344,7 @@ public static partial class DefinitionRules
                     if (action is null) { errors.Add(new(s.Id, "Choose what this step does.")); break; }
                     foreach (var key in action.Required)
                         if (Empty(s.Config[key])) errors.Add(new(s.Id, $"Fill in {action.Label(key)}."));
+                    if (s.App == "email" && Mail.SenderRules.Check(s.Config["from"]) is { } fromWhy) errors.Add(new(s.Id, fromWhy));
                     if (s.App == Ai.AiStepRules.App) errors.AddRange(Ai.AiStepRules.Check(s.Action, s.Config).Select(m => new DefinitionError(s.Id, m)));
                     break;
                 case StepTypes.Delay:

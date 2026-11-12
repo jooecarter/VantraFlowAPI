@@ -258,6 +258,7 @@ IF OBJECT_ID(N'flow.Folders', N'U') IS NOT NULL DELETE FROM flow.Folders WHERE W
 IF OBJECT_ID(N'flow.FlowComments', N'U') IS NOT NULL DELETE FROM flow.FlowComments WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.MentionNotices', N'U') IS NOT NULL DELETE FROM flow.MentionNotices WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.Activity', N'U') IS NOT NULL DELETE FROM flow.Activity WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.Mailboxes', N'U') IS NOT NULL DELETE FROM flow.Mailboxes WHERE WorkspaceId = @WorkspaceId;
 DELETE s FROM flow.RunSteps s WHERE s.RunId IN (SELECT r.Id FROM flow.Runs r WHERE r.WorkspaceId = @WorkspaceId);
 DELETE FROM flow.Runs WHERE WorkspaceId = @WorkspaceId;
 DELETE FROM flow.Events WHERE WorkspaceId = @WorkspaceId;

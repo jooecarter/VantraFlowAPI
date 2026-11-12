@@ -16,6 +16,7 @@ db/004_oauth_connectors.sql Slack, Microsoft 365 and Google: OAuth connections, 
 db/005_workspace_invites.sql workspaces: their colour and logo, and invitations (tokens kept hashed)
 db/006_ai_insights.sql    the AI builder's monthly count, time-saved figures, daily run totals, Insights' indexes
 db/010_reliability.sql    error handling: auto-pause per flow, the daily failure digest (on for new workspaces)
+db/013_mailboxes.sql      send from your own mailbox: SMTP mailboxes (sealed passwords) and the workspace's default sender
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -167,6 +168,24 @@ bash scripts/sqlcheck.sh
   hold secrets, sealed values or connection tokens (secrets, flows and connections by name only; credential-looking
   headers emptied), imports are checked strictly against the catalog (128 KB at most) and start switched off. Members
   comment and edit; owners and admins manage folders and tags, change owners and read the log.
+- **Send from your own mailbox** (db/013; `Services/Mail`, `Controllers/MailboxesController.cs`). The Send email step's
+  `from`: left out (or `default`) follows the workspace's default sender, and with none Vantra Flow's own mailbox, so older
+  flows send as before; `vantraflow`; `microsoft` or `google` (the workspace's Microsoft 365 or Google connection, sent
+  through the same code as the Outlook and Gmail send actions, `OAuthActions.SendMailAsync`); or `smtp:<mailbox id>`.
+  Reply-to is kept. A sender that's gone or refuses its sign-in fails the step with the mailbox named ("The mailbox
+  x@example.com is disconnected. Reconnect it in Connections."), and On error applies. The run's output names who sent
+  it (`sentFrom`). Each person still gets their own email, within the daily cap, and each mailbox sends at most 30 a minute.
+  - **SMTP mailboxes** (owners and admins add, edit and remove them; everyone else sees the address only): host, port
+    (25, 465, 587 or 2525), STARTTLS or SSL/TLS, username, password, From address and name. Saving connects and signs in
+    first (MailKit, nothing sent); then "Send test email" sends one to the person asking. The host must resolve to public
+    addresses only (`NetworkGuard`'s ranges, checked on what's dialled), TLS is always on, and connects, commands and the
+    whole try have timeouts (10, 20 and 45 seconds). The password is sealed (AES-256-GCM, bound to the workspace and the
+    mailbox), never logged or returned, and wiped when the mailbox is removed. 10 connects and test emails a minute per person.
+  - **Default sender** (`GET …/senders`, `PUT …/senders/default`, owners and admins): what steps on "Workspace default" use.
+    Flow's own emails (failure alerts, digests, approvals, mentions, invitations) always come from Vantra Flow.
+  - **Plans**: Microsoft 365 and Google are premium apps, so sending from an own mailbox follows them: Outlook counts as
+    Microsoft 365, Gmail as Google and an SMTP mailbox as `smtp` (in `Billing:PremiumApps`). A step that names one makes its
+    flow premium; a step on the default is checked as it sends; setting an own mailbox as the default needs the plan (402).
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
@@ -203,7 +222,8 @@ prune keeps no daily totals. Until db/008 has run, plans
 aren't enforced (the server's run quota applies as before), Plan & billing reads as not set up, checkout answers 503
 `not_ready`, and the Stripe webhook answers 503 so Stripe keeps its events and retries. Until db/011 has run, folders,
 tags, owners, comments and the activity log answer 503 `not_ready` (the studio hides them) and nothing is logged;
-duplicate, export and import work.
+duplicate, export and import work. Until db/013 has run, SMTP mailboxes and the default sender answer 503 `not_ready` (the studio
+hides them), and every Send email step sends from Vantra Flow or the Microsoft 365 or Google account it names.
 
 ## Settings
 
@@ -238,5 +258,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, then `db/012_developer_api.sql`, then `db/013_mailboxes.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

@@ -129,6 +129,16 @@ builder.Services.AddScoped<VantraFlow.Api.Services.Team.IActivityLog, VantraFlow
 builder.Services.AddScoped<VantraFlow.Api.Services.Team.IMentionMail, VantraFlow.Api.Services.Team.MentionMail>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Team.IFirstVersion, VantraFlow.Api.Services.Team.FirstVersion>();
 
+// Send from your own mailbox (db/013): SMTP mailboxes (MailKit, through NetworkGuard's checks), the workspace's Microsoft 365
+// and Google accounts, and the default sender for Send email steps.
+builder.Services.AddScoped<MailboxesRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Mail.IMailboxStore>(sp => sp.GetRequiredService<MailboxesRepository>());
+builder.Services.AddSingleton<VantraFlow.Api.Services.Mail.ISmtpMailer, VantraFlow.Api.Services.Mail.SmtpMailer>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Mail.IMailRoutes, VantraFlow.Api.Services.Mail.MailRoutes>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Mail.ISenderAccounts, VantraFlow.Api.Services.Mail.OAuthSenderAccounts>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Mail.ISenderPlan, VantraFlow.Api.Services.Mail.PlanSenderRules>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Mail.Senders>();
+
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
 // Two-step sign-in: Orbit's and Projects', asked server to server (Services/Auth/TwoFactorSignIn.cs).
@@ -223,6 +233,10 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(ApprovalLinksController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+    // Connecting an SMTP mailbox and its test email (each signs in to the server): 10 a minute per person.
+    o.AddPolicy(MailboxesController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
     // Webhook triggers and app events: 300 a minute per address and path.
     o.AddPolicy(IncomingController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") + ctx.Request.Path,
