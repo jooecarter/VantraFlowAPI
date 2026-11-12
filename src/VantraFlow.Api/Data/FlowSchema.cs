@@ -98,6 +98,28 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorkspacePl
         return plansReady;
     }
 
+    /// <summary>db/012 (the developer API and outgoing webhooks): the index it makes last, by name.</summary>
+    public const string DeveloperProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WebhookDeliveries_Endpoint' AND object_id = OBJECT_ID(N'flow.WebhookDeliveries'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool developerReady;
+    private DateTime developerCheckedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Has db/012 run? Until it has, Settings → Developers says it arrives with the next server update, <c>/api/v1</c>
+    /// answers 503 <c>not_ready</c>, and no webhook is queued or sent.
+    /// </summary>
+    public async Task<bool> DeveloperReadyAsync()
+    {
+        if (developerReady) return true;
+        if (DateTime.UtcNow - developerCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        developerReady = await conn.ExecuteScalarAsync<bool>(DeveloperProbeSql);
+        developerCheckedAt = DateTime.UtcNow;
+        return developerReady;
+    }
+
     private volatile bool invitesReady;
     private DateTime invitesCheckedAt = DateTime.MinValue;
 

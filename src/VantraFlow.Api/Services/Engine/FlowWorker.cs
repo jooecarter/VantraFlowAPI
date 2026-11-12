@@ -38,6 +38,7 @@ public sealed class FlowSignal
 /// steps (<see cref="RunExecutor"/>) and save the log.</item>
 /// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), and send the
 /// failure alerts that are due (<see cref="FailureAlerts"/>, db/002).</item>
+/// <item><b>Webhooks</b>: outgoing deliveries due (db/012), beside the loop (<see cref="Developer.WebhookDispatcher"/>).</item>
 /// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008).</item>
 /// <item><b>Hourly</b>: prune old claims, dead events, and runs older than <c>Flow:KeepRunsDays</c>.</item>
 /// </list>
@@ -55,6 +56,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
     private DateTime nextPrune = DateTime.MinValue;
     private DateTime nextPlans = DateTime.MinValue;
     private bool waitingLogged;
+    // Outgoing webhooks (db/012) are sent beside the loop, so a slow endpoint never holds up runs.
+    private Task deliveries = Task.CompletedTask;
 
     private static string Id()
     {
@@ -148,7 +151,15 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             {
                 var logs = state is null ? [] : await executor.ExecuteAsync(state, ct, maxSteps: 10);
                 state ??= Broken(run);
-                await engine.SaveSliceAsync(state, logs, run.StartedAt, DateTime.UtcNow);
+                var savedAt = DateTime.UtcNow;
+                await engine.SaveSliceAsync(state, logs, run.StartedAt, savedAt);
+                // A finished run: outgoing webhooks hear of it (run.succeeded, run.failed; db/012).
+                if (!state.Test && state.Status is RunStatuses.Succeeded or RunStatuses.Failed)
+                    await sp.GetRequiredService<Developer.IDevEvents>().RunFinishedAsync(run with
+                    {
+                        Status = state.Status, Error = state.Error, StepCount = state.StepCount, FinishedAt = savedAt,
+                        DurationMs = EngineRepository.DurationOf(run.StartedAt, savedAt),
+                    });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -157,6 +168,9 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
                 log.LogWarning(ex, "Flow run {Run} couldn't be saved; it will be picked up again", run.Id);
             }
         }
+
+        // Outgoing webhooks: the deliveries due, sent beside the loop (one batch at a time).
+        if (deliveries.IsCompleted) deliveries = Task.Run(() => DeliverAsync(ct), CancellationToken.None);
 
         // 3. Schedules, once a minute.
         if (now >= nextMinute)
@@ -201,9 +215,25 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) { log.LogInformation(ex, "Approvals prune failed"); }
             try { if (await sp.GetRequiredService<FlowSchema>().PlansReadyAsync()) await sp.GetRequiredService<PlansRepository>().PruneAsync(now.AddDays(-30)); }
             catch (Exception ex) { log.LogInformation(ex, "Billing prune failed"); }
+            try { if (await sp.GetRequiredService<FlowSchema>().DeveloperReadyAsync()) await sp.GetRequiredService<DeveloperRepository>().PruneAsync(now); }
+            catch (Exception ex) { log.LogInformation(ex, "Webhook deliveries prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;
+    }
+
+    /// <summary>One batch of due webhook deliveries, in its own scope (db/012; nothing before it has run).</summary>
+    private async Task DeliverAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopes.CreateScope();
+            var sp = scope.ServiceProvider;
+            if (!await sp.GetRequiredService<FlowSchema>().DeveloperReadyAsync()) return;
+            await sp.GetRequiredService<Developer.WebhookDispatcher>().DeliverDueAsync(me, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { log.LogWarning(ex, "Webhook deliveries failed"); }
     }
 
     private async Task ScheduleAsync(IServiceProvider sp, DateTime now, CancellationToken ct)
