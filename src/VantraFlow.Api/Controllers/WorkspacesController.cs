@@ -239,6 +239,11 @@ public sealed class WorkspacesController(
         await Workspaces.UpdateAsync(workspaceId, name, tz);
         if (setColor || setLogo)
             await Workspaces.SetLookAsync(workspaceId, setColor, WorkspaceRules.CleanColor(body!.Color), setLogo, string.IsNullOrEmpty(body.Logo) ? null : body.Logo);
+        var changed = new List<string>();
+        if (name != w.Name) changed.Add($"name to “{name}”");
+        if (tz != w.TimeZone) changed.Add($"time zone to {tz}");
+        if (setColor || setLogo) changed.Add("look");
+        if (changed.Count > 0) await LogAsync(workspaceId, Services.Team.ActivityKinds.SettingsChanged, detail: "Changed the " + string.Join(", ", changed));
         return Ok((await DtosAsync([((await Workspaces.GetAsync(workspaceId))!, role!)]))[0]);
     }
 
@@ -250,6 +255,7 @@ public sealed class WorkspacesController(
         if (refusal is not null) return refusal;
         if (!await features.AlertsReadyAsync()) return NotReady("Failure alerts arrive with the next server update.");
         await alerts.SetWorkspaceDefaultAsync(workspaceId, body.On);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.SettingsChanged, detail: body.On ? "Turned failure emails on" : "Turned failure emails off");
         return Ok((await DtosAsync([((await Workspaces.GetAsync(workspaceId))!, role!)]))[0]);
     }
 

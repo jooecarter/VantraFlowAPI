@@ -69,7 +69,13 @@ public sealed class MembersController(
         if (!FlowRoles.IsValid(body?.Role)) return BadRequest(new { error = "Choose owner, admin or member." });
         var plan = await Workspaces.ApplyAsync(workspaceId, s => WorkspaceRules.SetRole(s, Sub, vantraId, body!.Role!));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
-        return plan.Ok ? NoContent() : Refuse(plan.Error!);
+        if (!plan.Ok) return Refuse(plan.Error!);
+        if (plan.Changes.Count > 0)
+        {
+            var who = (await Workspaces.MembersAsync(workspaceId)).FirstOrDefault(m => string.Equals(m.VantraId, vantraId, StringComparison.OrdinalIgnoreCase));
+            await LogAsync(workspaceId, Services.Team.ActivityKinds.MemberRole, detail: $"{who?.Name ?? who?.Email ?? "A member"} is now {body!.Role}");
+        }
+        return NoContent();
     }
 
     [HttpDelete("api/w/{workspaceId:guid}/members/{vantraId}")]

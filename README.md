@@ -157,6 +157,16 @@ bash scripts/sqlcheck.sh
     is stamped `vantra_app=flow`; anything else on a shared Stripe account (Projects') is ignored. Owners and admins
     manage billing; everyone in the workspace sees the plan. Without `Stripe:SecretKey` the plan still shows, as
     "Not set up yet", and checkout answers 503 `billing_off`.
+- **Team and organisation** (db/011). Folders (one level; deleting one moves its flows to the top), tags with
+  colours, and an owner per flow (its creator until an owner or admin changes it): `GET …/organise` and the folder,
+  tag and owner endpoints. Comments on a flow with @mentions of the workspace's members, emailed (the server's
+  sender, as the author) at most once an hour per person per flow. The activity log: who created, edited (with the
+  version), switched on or off, renamed, deleted, moved or re-owned a flow, connected or disconnected an app, changed
+  a member's role or the workspace's settings (`GET …/activity`, owners and admins; `GET …/flows/{id}/activity`,
+  members). Duplicate (into this or another of your workspaces), export as a JSON file and import one: exports never
+  hold secrets, sealed values or connection tokens (secrets, flows and connections by name only; credential-looking
+  headers emptied), imports are checked strictly against the catalog (128 KB at most) and start switched off. Members
+  comment and edit; owners and admins manage folders and tags, change owners and read the log.
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
@@ -191,7 +201,9 @@ already has a Vantra account, renaming, leaving, handing over and deleting all w
 503 `not_ready`, Insights reads only the runs still kept and its time-saved settings answer 503 `not_ready`, and the
 prune keeps no daily totals. Until db/008 has run, plans
 aren't enforced (the server's run quota applies as before), Plan & billing reads as not set up, checkout answers 503
-`not_ready`, and the Stripe webhook answers 503 so Stripe keeps its events and retries.
+`not_ready`, and the Stripe webhook answers 503 so Stripe keeps its events and retries. Until db/011 has run, folders,
+tags, owners, comments and the activity log answer 503 `not_ready` (the studio hides them) and nothing is logged;
+duplicate, export and import work.
 
 ## Settings
 
@@ -226,5 +238,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

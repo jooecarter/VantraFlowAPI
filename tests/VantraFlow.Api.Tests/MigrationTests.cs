@@ -89,4 +89,28 @@ public sealed class MigrationTests
         Assert.Contains("DEFAULT 0 WITH VALUES", sql);
         Assert.Contains("DEFAULT 1 FOR FailureDigest", sql);
     }
+
+    private static string Team => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "db", "011_team.sql"));
+
+    [Fact]
+    public void The_team_migration_is_azure_ready_stops_without_db_001_and_makes_the_probes_index_last()
+    {
+        var sql = Team;
+        Assert.DoesNotMatch(new Regex(@"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase), sql);
+        Assert.DoesNotMatch(new Regex(@"^\s*USE\s", RegexOptions.Multiline | RegexOptions.IgnoreCase), sql);
+        foreach (var parser in new TSqlParser[] { new TSql160Parser(true), new TSql170Parser(true) })
+        {
+            parser.Parse(new StringReader(sql), out var errors);
+            Assert.Empty(errors);
+        }
+        var outside = Regex.Replace(sql, @"EXEC\(N'(?:[^']|'')*'\);", "EXEC(...);");
+        Assert.DoesNotMatch(new Regex(@"\b(CREATE\s+(UNIQUE\s+)?INDEX|CREATE\s+TABLE|ALTER\s+TABLE)\b", RegexOptions.IgnoreCase), outside);
+        // The guard comes before any change.
+        Assert.True(sql.IndexOf("THROW 51011", StringComparison.Ordinal) < sql.IndexOf("EXEC(N'", StringComparison.Ordinal));
+        var last = Regex.Matches(sql, @"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(\w+)", RegexOptions.IgnoreCase).Last().Groups[1].Value;
+        Assert.Equal("IX_Activity_Flow", last);
+        Assert.Contains("IX_Activity_Flow", VantraFlow.Api.Data.TeamRepository.ProbeSql);
+        Assert.DoesNotContain("check_constraints", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("definition", VantraFlow.Api.Data.TeamRepository.ProbeSql, StringComparison.OrdinalIgnoreCase);
+    }
 }

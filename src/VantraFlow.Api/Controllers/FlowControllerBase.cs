@@ -55,6 +55,15 @@ public abstract class FlowControllerBase(IWorkspaceStore workspaces) : Controlle
             : (null, StatusCode(403, new { error = "Only owners and admins can do that.", code = "not_manager" }));
     }
 
+    /// <summary>
+    /// The activity log (db/011): records what the caller just changed. Never fails the request; nothing is written
+    /// until db/011 has run, or where no log is registered (tests that don't ask for one).
+    /// </summary>
+    protected Task LogAsync(Guid workspaceId, string kind, string? flowId = null, string? flowName = null, int? version = null, string? detail = null) =>
+        HttpContext?.RequestServices?.GetService<Services.Team.IActivityLog>() is { } log
+            ? log.WriteAsync(new Services.Team.ActivityEntry(workspaceId, Sub, DisplayName, kind, flowId, flowName, version, detail))
+            : Task.CompletedTask;
+
     public static string Iso(DateTime d) => DateTime.SpecifyKind(d, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
     public static string? Iso(DateTime? d) => d is { } v ? Iso(v) : null;
 }

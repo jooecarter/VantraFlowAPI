@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.RateLimiting;
 using VantraFlow.Api.Data;
 using VantraFlow.Api.Shared;
@@ -44,8 +45,16 @@ public sealed class SharedMembersController(IWorkspaceStore workspaces, SharedSy
         Run(workspaceId, write: true, s => team.RevokeInviteAsync(s, Actor, inviteId));
 
     [HttpPut("api/w/{workspaceId:guid}/shared/members/{vantraId}/role")]
-    public Task<IActionResult> Role(Guid workspaceId, string vantraId, [FromBody] SharedRoleBody? body) =>
-        Run(workspaceId, write: true, s => team.SetRoleAsync(s, Actor, vantraId, body));
+    public async Task<IActionResult> Role(Guid workspaceId, string vantraId, [FromBody] SharedRoleBody? body)
+    {
+        var result = await Run(workspaceId, write: true, s => team.SetRoleAsync(s, Actor, vantraId, body));
+        if (result is IStatusCodeActionResult { StatusCode: >= 200 and < 300 })
+        {
+            var who = (await Workspaces.MembersAsync(workspaceId)).FirstOrDefault(m => string.Equals(m.VantraId, vantraId, StringComparison.OrdinalIgnoreCase));
+            await LogAsync(workspaceId, Services.Team.ActivityKinds.MemberRole, detail: $"{who?.Name ?? who?.Email ?? "A member"} is now {body?.Role}");
+        }
+        return result;
+    }
 
     [HttpPut("api/w/{workspaceId:guid}/shared/members/{vantraId}/apps/{app}")]
     public Task<IActionResult> Grant(Guid workspaceId, string vantraId, string app) =>
