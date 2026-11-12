@@ -83,7 +83,7 @@ public static partial class AiStepRules
                 if (DefinitionRules.Empty(config["categories"])) break; // the required check says so
                 if (named.Count < MinCategories) yield return $"Add at least {MinCategories} categories.";
                 if (cats.Count > MaxCategories) yield return $"Use at most {MaxCategories} categories.";
-                if (cats.Any(c => c.Name.Length == 0)) yield return "Name every category.";
+                if (named.Count >= MinCategories && cats.Any(c => c.Name.Length == 0)) yield return "Name every category.";
                 if (named.Any(c => c.Name.Length > 60)) yield return "Keep category names under 60 characters.";
                 if (named.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1)) yield return "Two categories share a name.";
                 break;
