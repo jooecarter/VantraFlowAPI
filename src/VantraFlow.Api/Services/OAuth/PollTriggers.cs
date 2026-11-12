@@ -24,7 +24,8 @@ public interface IPollSource
 
 /// <summary>
 /// The polling triggers, on the worker's minute tick (db/004): Outlook's new email (a Microsoft Graph delta link on the
-/// inbox), Gmail's new email (the mailbox's history id) and a Google Sheet's new row (its row count). Each enabled flow
+/// inbox), Gmail's new email (the mailbox's history id), a Google Sheet's new row (its row count), and Stripe's, HubSpot's
+/// and Xero's (<see cref="BusinessPolls"/>, db/007). Each enabled flow
 /// has its own cursor (flow.PollCursors), claimed under a lease so one instance polls it; every
 /// <c>Connectors:PollSeconds</c> (120 by default), doubling after each failure up to an hour and waiting at least as
 /// long as a provider's 429 asks. A trigger's config or the flow's last save changes its fingerprint, which starts it
@@ -110,6 +111,7 @@ public sealed class OAuthPollSource(OAuthConnections connections) : IPollSource
         ("microsoft", "mail.new") => OutlookAsync(workspaceId, bookmark, ct),
         ("google", "gmail.new") => GmailAsync(workspaceId, bookmark, ct),
         ("google", "sheets.row.new") => SheetAsync(workspaceId, trigger.Config, bookmark, ct),
+        ("stripe" or "hubspot" or "xero", _) => new BusinessPolls(connections).PollAsync(workspaceId, trigger, bookmark, ct),
         _ => throw new AppRefusedException(400, "This trigger doesn't poll.", "no_poll"),
     };
 

@@ -114,7 +114,7 @@ SELECT TOP (@Take) f.Id AS FlowId, f.WorkspaceId, f.TriggerApp AS Provider, f.Tr
        c.Fingerprint, c.Bookmark, c.NextPollAt, c.Failures
 FROM flow.Flows f
 LEFT JOIN flow.PollCursors c ON c.FlowId = f.Id
-WHERE f.Enabled = 1 AND f.TriggerApp IN (N'microsoft', N'google') AND (c.FlowId IS NULL OR c.NextPollAt <= @Now)
+WHERE f.Enabled = 1 AND f.TriggerApp IN (N'microsoft', N'google', N'stripe', N'hubspot', N'xero') AND (c.FlowId IS NULL OR c.NextPollAt <= @Now)
 ORDER BY c.NextPollAt;", new { Take = take, Now = now })).ToList();
     }
 

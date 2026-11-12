@@ -66,7 +66,8 @@ public sealed class StepDef
     public string Id { get; set; } = "";
     /// <summary>
     /// <c>action</c>, <c>delay</c>, <c>branch</c> (if / else), <c>paths</c>, <c>loop</c> ("Repeat for each"),
-    /// <c>filter</c> ("Only continue if"), <c>formatter</c> or <c>variable</c> (<see cref="StepTypes"/>).
+    /// <c>filter</c> ("Only continue if"), <c>formatter</c>, <c>variable</c>, <c>wait</c> ("Wait until") or
+    /// <c>approval</c> (<see cref="StepTypes"/>).
     /// </summary>
     public string Type { get; set; } = StepTypes.Action;
     public string? App { get; set; }
@@ -141,6 +142,10 @@ public static class StepTypes
     public const string Filter = "filter";
     public const string Formatter = "formatter";
     public const string Variable = "variable";
+    /// <summary>"Wait until": re-checks a condition until it holds or a time passes (<see cref="WaitRules"/>).</summary>
+    public const string Wait = "wait";
+    /// <summary>"Approval": asks people to approve or reject, then goes down Approved, Rejected or Timed out (<see cref="ApprovalRules"/>).</summary>
+    public const string Approval = "approval";
 }
 
 /// <summary>
@@ -307,9 +312,23 @@ public static partial class DefinitionRules
                         errors.Add(new(s.Id, $"Retries: up to {FlowLimits.MaxRetries}, waiting 5 seconds to an hour."));
                     break;
                 case StepTypes.Delay:
-                    if (DelayOf(s.Config) is not { } d) errors.Add(new(s.Id, "Set how long to wait."));
+                    if (DelayRules.IsUntil(s.Config))
+                    {
+                        if (DelayRules.CheckUntil(s.Config) is { } untilWhy) errors.Add(new(s.Id, untilWhy));
+                    }
+                    else if (DelayOf(s.Config) is not { } d) errors.Add(new(s.Id, "Set how long to wait."));
                     else if (d > FlowLimits.MaxDelay) errors.Add(new(s.Id, "A delay can be at most 30 days."));
                     break;
+                case StepTypes.Wait:
+                    errors.AddRange(WaitRules.Check(s.Config, earlier).Select(m => new DefinitionError(s.Id, m)));
+                    break;
+                case StepTypes.Approval:
+                    if (inLoop) errors.Add(new(s.Id, "An Approval can't be inside a Repeat for each."));
+                    else if (depth >= limits.MaxDepth) errors.Add(new(s.Id, $"Branches and approvals can be nested {limits.MaxDepth - 1} deep at most."));
+                    errors.AddRange(ApprovalRules.Check(s).Select(m => new DefinitionError(s.Id, m)));
+                    earlier.Add(s.Id);
+                    Sides(s, ApprovalRules.Sides(s), depth, errors, seen, earlier, limits, inLoop, vars);
+                    continue;
                 case StepTypes.Filter:
                     if (Conditions.Parse(s.Config["condition"]) is not { } fc || fc.Count == 0) errors.Add(new(s.Id, "Add a condition."));
                     break;
@@ -389,7 +408,8 @@ public static partial class DefinitionRules
     public static TimeSpan? DelayOf(JsonObject config)
     {
         var amount = config["amount"] is JsonValue v && v.TryGetValue<double>(out var a) ? a
-            : config["amount"] is JsonValue s && s.TryGetValue<string>(out var str) && double.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : -1;
+            : config["amount"] is JsonValue s && s.TryGetValue<string>(out var str) && double.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, out var p) ? p
+            : Formatter.ToNumber(config["amount"]) ?? -1;
         if (amount <= 0) return null;
         return (config["unit"]?.GetValue<string>() ?? "minutes") switch
         {

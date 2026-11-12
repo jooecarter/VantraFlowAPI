@@ -12,7 +12,8 @@ namespace VantraFlow.Api.Controllers;
 /// <summary>
 /// Everything that reaches Flow from outside, anonymous but verified, rate limited per address:
 /// <code>
-/// POST api/hooks/{hookId}               a webhook trigger: JSON in; with a secret, X-Flow-Signature / X-Flow-Timestamp
+/// POST api/hooks/{hookId}               a webhook trigger: JSON or a form in; with a secret, X-Flow-Signature / X-Flow-Timestamp;
+///                                       the newest payload kept as the builder's sample (db/007), also while the flow is off
 /// POST api/events/orbit/{subscription}  Orbit's outgoing webhook: X-Vantra-Signature over "{X-Vantra-Timestamp}.{body}"
 /// POST api/events/projects/{subscription} Projects' developer webhook: X-Vantra-Signature over the body, its timestamp
 /// </code>
@@ -25,7 +26,7 @@ namespace VantraFlow.Api.Controllers;
 [EnableRateLimiting(RateLimitPolicy)]
 public sealed class IncomingController(
     FlowsRepository flows, ConnectionsRepository connections, EngineRepository engine, Connections conns, FlowSecrets secrets, FlowSignal signal,
-    ILogger<IncomingController> log) : ControllerBase
+    ILogger<IncomingController> log, FlowSchema schema, StepsRepository steps) : ControllerBase
 {
     public const string RateLimitPolicy = "incoming";
     public const int MaxBodyBytes = 256 * 1024;
@@ -38,26 +39,70 @@ public sealed class IncomingController(
         if (hookId.Length is < 8 or > 40) return Unknown();
         var body = await ReadAsync();
         if (body is null) return StatusCode(413, new { error = "The body is over 256 KB." });
-        if (await flows.ByHookAsync(hookId) is not { Enabled: true } flow) return Unknown();
+        // A flow that's off still keeps a sample (once db/007 has run), so the builder can map its fields; it starts nothing.
+        var samples = await schema.StepsReadyAsync();
+        if (await flows.ByHookAsync(hookId) is not { } flow || (!flow.Enabled && !samples)) return Unknown();
         if (flow.HookSecretCipher is not null)
         {
             var secret = secrets.Unprotect(flow.HookSecretCipher, flow.WorkspaceId, hookId);
             if (secret is null || !FlowSecrets.VerifyTimestamped(secret, Request.Headers[SignatureHeader], Request.Headers[TimestampHeader], body, DateTime.UtcNow))
                 return Unknown();
         }
-        JsonNode? json = null;
-        if (body.Length > 0)
-        {
-            try { json = JsonNode.Parse(body, documentOptions: new JsonDocumentOptions { MaxDepth = 32 }); }
-            catch (JsonException) { return BadRequest(new { error = "The body must be JSON." }); }
-        }
+        if (HookBody(body, Request.ContentType) is not { } parsed) return BadRequest(new { error = "The body must be JSON or a form." });
         var query = new JsonObject();
         foreach (var (k, v) in Request.Query.Take(50)) query[k] = v.ToString();
-        var payload = new JsonObject { ["body"] = json ?? new JsonObject(), ["query"] = query, ["receivedAt"] = DateTime.UtcNow.ToString("o") };
+        var payload = new JsonObject
+        {
+            ["body"] = parsed, ["query"] = query, ["headers"] = SafeHeaders(Request.Headers), ["receivedAt"] = DateTime.UtcNow.ToString("o"),
+        };
+        var text = payload.ToJsonString();
+        if (samples) await steps.SaveHookSampleAsync(flow.WorkspaceId, flow.Id, text, DateTime.UtcNow);
+        if (!flow.Enabled) return StatusCode(202, new { accepted = true, captured = true });
         var id = FlowSecrets.NewRowId("fev_");
-        await engine.EnqueueAsync(flow.WorkspaceId, EventSources.Webhook, "catch", null, flow.Id, payload.ToJsonString(), false, DateTime.UtcNow, id: id);
+        await engine.EnqueueAsync(flow.WorkspaceId, EventSources.Webhook, "catch", null, flow.Id, text, false, DateTime.UtcNow, id: id);
         signal.Poke();
         return StatusCode(202, new { accepted = true, id });
+    }
+
+    /// <summary>
+    /// A webhook's body as trigger data: JSON as it is; a form (<c>application/x-www-form-urlencoded</c>) as an object of
+    /// its fields (a field sent more than once, a list); empty, an empty object. Null when it's neither.
+    /// </summary>
+    public static JsonNode? HookBody(byte[] body, string? contentType)
+    {
+        if (body.Length == 0) return new JsonObject();
+        if (contentType?.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            var form = new JsonObject();
+            var fields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(System.Text.Encoding.UTF8.GetString(body));
+            foreach (var (k, v) in fields.Take(200))
+                form[k] = v.Count > 1 ? new JsonArray(v.Select(x => (JsonNode?)JsonValue.Create(x ?? "")).ToArray()) : JsonValue.Create(v.ToString());
+            return form;
+        }
+        try { return JsonNode.Parse(body, documentOptions: new JsonDocumentOptions { MaxDepth = 32 }) ?? new JsonObject(); }
+        catch (JsonException) { return null; }
+    }
+
+    private static readonly HashSet<string> SecretHeaders = new(StringComparer.OrdinalIgnoreCase)
+        { "Authorization", "Cookie", "Proxy-Authorization", SignatureHeader, TimestampHeader, "X-Api-Key", "X-Hub-Signature", "X-Hub-Signature-256", "Stripe-Signature" };
+
+    /// <summary>The request's headers a flow may read: the sender's content type, user agent and its own <c>X-</c> headers, never credentials or signatures.</summary>
+    public static JsonObject SafeHeaders(IHeaderDictionary headers)
+    {
+        var o = new JsonObject();
+        foreach (var (k, v) in headers)
+        {
+            if (o.Count >= 30 || SecretHeaders.Contains(k) || k.Contains("token", StringComparison.OrdinalIgnoreCase) || k.Contains("secret", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!(k.Equals("Content-Type", StringComparison.OrdinalIgnoreCase) || k.Equals("User-Agent", StringComparison.OrdinalIgnoreCase)
+                  || k.StartsWith("X-", StringComparison.OrdinalIgnoreCase)) || k.StartsWith("X-Forwarded", StringComparison.OrdinalIgnoreCase)
+                || k.StartsWith("X-ARR", StringComparison.OrdinalIgnoreCase) || k.StartsWith("X-Original", StringComparison.OrdinalIgnoreCase)
+                || k.Equals("X-Client-IP", StringComparison.OrdinalIgnoreCase) || k.StartsWith("X-Site", StringComparison.OrdinalIgnoreCase)
+                || k.StartsWith("X-Waws", StringComparison.OrdinalIgnoreCase) || k.StartsWith("X-AppService", StringComparison.OrdinalIgnoreCase)
+                || k.StartsWith("X-MS-", StringComparison.OrdinalIgnoreCase)) continue;
+            var text = v.ToString();
+            o[k.ToLowerInvariant()] = text.Length > 300 ? text[..300] : text;
+        }
+        return o;
     }
 
     [HttpPost("api/events/orbit/{subscriptionId}")]

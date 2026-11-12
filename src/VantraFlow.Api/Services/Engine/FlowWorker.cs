@@ -136,7 +136,7 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
         }
 
         // 2. Runs.
-        var executor = new RunExecutor(sp.GetRequiredService<IStepActions>(), limits);
+        var executor = new RunExecutor(sp.GetRequiredService<IStepActions>(), limits, approvals: sp.GetService<IApprovalGate>());
         var runs = await engine.ClaimRunsAsync(me, DateTime.UtcNow, 10, Lease);
         foreach (var run in runs)
         {
@@ -177,6 +177,12 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) { log.LogInformation(ex, "Flow prune failed"); }
             try { if (await sp.GetRequiredService<FlowSchema>().ConnectorsReadyAsync()) await sp.GetRequiredService<OAuthRepository>().PruneAsync(now); }
             catch (Exception ex) { log.LogInformation(ex, "Connector prune failed"); }
+            try
+            {
+                if (await sp.GetRequiredService<FlowSchema>().StepsReadyAsync())
+                    await sp.GetRequiredService<StepsRepository>().PruneAsync(now, int.TryParse(config["Flow:KeepRunsDays"], out var keep) ? Math.Clamp(keep, 7, 365) : 30);
+            }
+            catch (Exception ex) { log.LogInformation(ex, "Approvals prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;

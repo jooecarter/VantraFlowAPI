@@ -17,7 +17,8 @@ namespace VantraFlow.Api.Controllers;
 /// POST api/w/{ws}/runs/{id}/cancel                      → a queued or waiting run stops
 /// </code>
 /// </summary>
-public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, IConfiguration config)
+public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, IConfiguration config,
+    FlowSchema schema, StepsRepository steps)
     : FlowControllerBase(workspaces)
 {
     [HttpGet("api/w/{workspaceId:guid}/runs")]
@@ -67,8 +68,10 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     {
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
-        return await engine.CancelRunAsync(workspaceId, id, DateTime.UtcNow) ? NoContent()
-            : Conflict(new { error = "Only a queued or waiting run can be cancelled." });
+        if (!await engine.CancelRunAsync(workspaceId, id, DateTime.UtcNow)) return Conflict(new { error = "Only a queued or waiting run can be cancelled." });
+        // An approval it was waiting on stops waiting too (its links then say the run was cancelled).
+        if (await schema.StepsReadyAsync()) await steps.CancelApprovalsAsync(id, DateTime.UtcNow);
+        return NoContent();
     }
 
     public static async Task<RunDetailDto?> DetailAsync(EngineRepository engine, Guid workspaceId, string id)
