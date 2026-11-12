@@ -182,14 +182,14 @@ UPDATE flow.Runs
 SET Status = @Status, Context = @Context, Position = @Position, Attempt = @Attempt, StepCount = @StepCount, Error = @Error,
     NotBefore = @NotBefore, LeaseUntil = NULL, LeaseBy = NULL,
     FinishedAt = CASE WHEN @Finished = 1 THEN @Now ELSE NULL END,
-    DurationMs = CASE WHEN @Finished = 1 THEN DATEDIFF(MILLISECOND, StartedAt, @Now) ELSE NULL END
+    DurationMs = CASE WHEN @Finished = 1 THEN @DurationMs ELSE NULL END
 WHERE Id = @Id;
 IF @Finished = 1
     UPDATE flow.Flows SET LastRunAt = @StartedAt, LastRunStatus = @Status WHERE WorkspaceId = @WorkspaceId AND Id = @FlowId AND @Test = 0;",
             new
             {
                 s.Id, s.WorkspaceId, s.FlowId, s.Status, Context = s.Data.ToJsonString(), s.Position, s.Attempt, s.StepCount, Error = Clip(s.Error),
-                s.NotBefore, Finished = finished, Now = now, StartedAt = startedAt, s.Test,
+                s.NotBefore, Finished = finished, Now = now, StartedAt = startedAt, s.Test, DurationMs = DurationOf(startedAt, now),
             }, tx);
         tx.Commit();
     }
@@ -299,6 +299,14 @@ BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
     THROW;
 END CATCH;";
+
+    /// <summary>
+    /// A run's duration in milliseconds for its INT column, worked out here: a run with a long Delay, Wait until or Approval
+    /// can last more than the 24.8 days an INT of milliseconds holds (SQL's DATEDIFF(MILLISECOND) overflows there), so
+    /// it's held at the column's largest value instead of failing the save.
+    /// </summary>
+    public static int DurationOf(DateTime startedAt, DateTime now) =>
+        (int)Math.Clamp(Math.Round((now - startedAt).TotalMilliseconds), 0, int.MaxValue);
 
     private static string? Clip(string? s, int max = 1000) => s is null ? null : s.Length <= max ? s : s[..max];
 }

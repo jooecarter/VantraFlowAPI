@@ -64,7 +64,8 @@ STEP TYPES besides "action" (app and action are "" for these):
   config.at (a date and time, or a token) to wait until then.
 - "wait" ("Wait until"): config.condition, checked every config.every minutes (default 15) for at most config.amount config.unit
   (default 3 days); config.onTimeout continue | stop. Its output: {{steps.<id>.met}}.
-- "approval": config.title, config.details; config.approvers is left empty (the person picks workspace members). "paths" holds
+- "approval": config.title, config.details, config.amount and config.unit (how long to wait, default 3 days); config.approvers is
+  left empty (it asks the person drafting until they pick workspace members). "paths" holds
   exactly three paths, named Approved, Rejected and Timed out, with condition "" and the steps for each. Not inside a loop.
 - "formatter": config.kind (text | number | date | lookup), config.op, config.input (a token); its result is {{steps.<id>.output}}.
   text: trim, case (case: upper|lower|title|sentence), replace (find, with), split (separator), extract (what: email|url|number).
@@ -182,6 +183,26 @@ Schedule times are HH:mm in the workspace's time zone; weekly days are ["mon","t
         var description = Clip(Text(root["description"]), 500);
         var explanation = Clip(Text(root["explanation"]), 600);
         return new PlannerDraft(name.Length > 0 ? name : "Untitled flow", description.Length > 0 ? description : null, explanation, def, notes.Distinct().ToList());
+    }
+
+    /// <summary>
+    /// The approvers an Approval step drafted without any gets: the person who asked for the draft (a member of the
+    /// workspace, so it runs as drafted), with a note saying so; a missing title gets a plain one. Approvers the person
+    /// already chose (an edit of their flow) are kept.
+    /// </summary>
+    public static PlannerDraft WithDefaultApprovers(PlannerDraft draft, string approverId)
+    {
+        var notes = draft.Notes.ToList();
+        var filled = false;
+        foreach (var s in draft.Definition.AllSteps().Where(s => s.Type == StepTypes.Approval))
+        {
+            if (Text(s.Config["title"]).Trim().Length == 0) s.Config["title"] = s.Name ?? "Approval needed";
+            if (ApprovalRules.ApproversOf(s.Config).Count > 0 || approverId.Length == 0) continue;
+            s.Config["approvers"] = new JsonArray(approverId);
+            filled = true;
+        }
+        if (filled) notes.Add("Approvals ask you for now: choose who else can approve in the Approval step.");
+        return draft with { Notes = notes.Distinct().ToList() };
     }
 
     private static List<StepDef> Steps(JsonNode? node, int depth, bool inLoop, List<string> notes, ref int budget, FlowLimits limits)

@@ -495,3 +495,41 @@ public sealed class StepsMigrationTests
         Assert.DoesNotContain("check_constraints", sql, StringComparison.OrdinalIgnoreCase);
     }
 }
+
+public sealed class LongRunTests
+{
+    [Fact]
+    public void A_run_longer_than_an_int_of_milliseconds_is_held_at_the_columns_largest_value()
+    {
+        var start = new DateTime(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(1500, VantraFlow.Api.Data.EngineRepository.DurationOf(start, start.AddMilliseconds(1500)));
+        // A 30-day delay then a 2-day approval: past the 24.8 days DATEDIFF(MILLISECOND) can hold.
+        Assert.Equal(int.MaxValue, VantraFlow.Api.Data.EngineRepository.DurationOf(start, start.AddDays(32)));
+        Assert.Equal((int)TimeSpan.FromDays(24).TotalMilliseconds, VantraFlow.Api.Data.EngineRepository.DurationOf(start, start.AddDays(24)));
+        Assert.Equal(0, VantraFlow.Api.Data.EngineRepository.DurationOf(start, start.AddSeconds(-1)));
+    }
+
+    [Fact]
+    public void The_planner_knows_the_new_actions_and_an_approval_asks_whoever_drafted_it()
+    {
+        foreach (var key in new[] { "http/request", "stripe/customer.create", "stripe/invoiceitem.create", "stripe/invoice.send", "stripe/customer.find",
+                     "hubspot/contact.upsert", "hubspot/deal.create", "hubspot/contact.find", "xero/contact.create", "xero/invoice.create", "xero/contact.find" })
+            Assert.True(VantraFlow.Api.Services.Ai.PlannerCatalog.Hints.ContainsKey(key), key);
+        foreach (var a in FlowCatalog.Actions.Where(a => a.App is "stripe" or "hubspot" or "xero"))
+            Assert.True(VantraFlow.Api.Services.Ai.PlannerCatalog.Hints.ContainsKey($"{a.App}/{a.Key}"), $"{a.App}/{a.Key}");
+
+        var answer = """
+        {"name":"Refunds","description":"","explanation":"",
+         "trigger":{"app":"webhook","event":"catch","config":[]},
+         "steps":[{"id":"s1","type":"approval","app":"","action":"","name":"Approve the refund","config":[{"key":"details","value":"{{trigger.body.reason}}","json":false}],
+           "then":[],"else":[],"do":[],"paths":[{"name":"Approved","condition":"","steps":[{"id":"s2","type":"action","app":"email","action":"send","name":"Tell them","config":[{"key":"to","value":"{{trigger.body.email}}","json":false},{"key":"subject","value":"Refunded","json":false}],"then":[],"else":[],"do":[],"paths":[]}]}]}]}
+        """;
+        var read = VantraFlow.Api.Services.Ai.FlowPlanner.Read(answer, new FlowLimits())!;
+        var draft = VantraFlow.Api.Services.Ai.FlowPlanner.WithDefaultApprovers(read, "u_me");
+        var step = draft.Definition.Steps[0];
+        Assert.Equal(["u_me"], ApprovalRules.ApproversOf(step.Config));
+        Assert.Equal("Approve the refund", Tokens.Text(step.Config["title"]));
+        Assert.Contains(draft.Notes, n => n.Contains("Approvals ask you"));
+        Assert.Empty(DefinitionRules.Validate(draft.Definition, new FlowLimits()));
+    }
+}

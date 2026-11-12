@@ -25,6 +25,9 @@ public static class PlannerCatalog
         ["trigger:projects/task.completed"] = H(["projectId: one project's id (leave out for every project)"]),
         ["trigger:schedule/interval"] = H(["unit: minutes | hours"]),
         ["trigger:slack/message"] = H(["replies: true to include thread replies", "bots: true to include other apps' messages"]),
+        ["trigger:schedule/monthly"] = H(["day: 1–31 or \"last\" (default the 1st)"]),
+        ["trigger:hubspot/deal.stage"] = H(["pipeline: a pipeline id (leave out for every pipeline)",
+            "stage: a stage id, e.g. closedwon (leave out for any change of stage)"]),
 
         ["orbit/record.create"] = H([], "id", "url"),
         ["orbit/record.update"] = H([], "id", "url"),
@@ -38,8 +41,11 @@ public static class PlannerCatalog
         ["projects/task.update"] = H(["status: a column name, e.g. In Review", "assignee: an email", "dueDate: yyyy-MM-dd"], "id", "name", "status", "url"),
         ["projects/task.comment"] = H([], "id", "taskId"),
         ["email/send"] = H(["body: the message (plain text)", "replyTo: an email"], "to", "subject"),
-        ["http/request"] = H(["method: POST | GET | PUT | PATCH | DELETE (default POST)", "body: text, usually JSON",
-            "headers: object of header name to value (never put secrets here: leave them for the person to add)"], "status", "body"),
+        ["http/request"] = H(["method: POST | GET | PUT | PATCH | DELETE (default POST)", "query: object of parameter name to value",
+            "headers: object of header name to value (never put secrets here: leave them for the person to add)",
+            "bodyType: json | form | raw (default json)", "body: text (JSON for json)", "form: object of field name to value (for form)",
+            "auth: object { type: none | bearer | basic | header, header: the header name for header } (leave secretId out: the person picks a saved secret)",
+            "errors: fail | continue (continue hands on a 4xx/5xx response instead of failing)"], "status", "ok", "body", "headers"),
         ["flow/run"] = H(["input: object of name to value (text or tokens)"], "flowName", "eventId"),
         ["slack/message.send"] = H([], "ts", "channel"),
         ["slack/dm.send"] = H([], "ts", "user"),
@@ -50,12 +56,25 @@ public static class PlannerCatalog
         ["google/sheets.row.add"] = H([], "rowNumber", "values"),
         ["google/sheets.row.find"] = H(["value: the value the column equals"], "found", "rowNumber", "values", "count", "rows (a list)"),
         ["google/sheets.row.update"] = H([], "rowNumber", "values"),
+        ["stripe/customer.create"] = H(["email", "name", "phone", "description"], "id", "email", "name", "link"),
+        ["stripe/invoiceitem.create"] = H(["currency: gbp | usd | eur | aud | cad (default gbp)", "description"], "id", "amount", "currency"),
+        ["stripe/invoice.send"] = H(["daysUntilDue: number (default 30)", "description: the invoice's memo"], "id", "number", "amountDue", "hostedUrl", "pdf"),
+        ["stripe/customer.find"] = H([], "found", "id", "email", "name", "link", "customers (a list)"),
+        ["hubspot/contact.upsert"] = H(["firstname", "lastname", "company", "phone", "properties: object of HubSpot property name to value"],
+            "id", "email", "created", "link"),
+        ["hubspot/deal.create"] = H(["amount: a number", "pipeline: a pipeline id (default the default pipeline)", "dealstage: a stage id, e.g. appointmentscheduled",
+            "closedate: yyyy-MM-dd or a token", "contact: an email or a contact id (e.g. {{steps.s1.id}}) to link"], "id", "name", "amount", "stage", "link"),
+        ["hubspot/contact.find"] = H([], "found", "id", "email", "name", "phone", "company", "link"),
+        ["xero/contact.create"] = H(["email", "firstName", "lastName", "phone"], "id", "name", "email", "link"),
+        ["xero/invoice.create"] = H(["description", "quantity: a number (default 1)", "accountCode: e.g. 200", "dueDate: yyyy-MM-dd (default in 30 days)",
+            "reference", "status: DRAFT | AUTHORISED (default DRAFT)"], "id", "number", "total", "status", "link"),
+        ["xero/contact.find"] = H([], "found", "id", "name", "email", "link", "contacts (a list)"),
     };
 
     /// <summary>A few config keys whose value is a JSON object or list rather than text.</summary>
     public static readonly IReadOnlySet<string> ObjectKeys = new HashSet<string>(StringComparer.Ordinal)
     {
-        "fields", "values", "headers", "input", "condition", "assignments", "rows", "fieldIds", "days",
+        "fields", "values", "headers", "input", "condition", "assignments", "rows", "fieldIds", "days", "query", "form", "auth", "properties", "approvers",
     };
 
     /// <summary>The catalog, the step types and the token rules, as the planner's instructions describe them.</summary>

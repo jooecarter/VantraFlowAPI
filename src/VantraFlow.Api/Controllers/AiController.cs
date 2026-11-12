@@ -94,12 +94,14 @@ public sealed class AiController(
         var context = await ContextAsync(workspaceId, ws.TimeZone, current, ct);
         var limits = FlowLimits.From(config);
         var answer = await ai.DraftAsync(FlowPlanner.Instructions(context, now), prompt, FlowPlanner.Schema(), ct);
-        var draft = FlowPlanner.Read(answer, limits, current);
-        if (draft is null)
+        var read = FlowPlanner.Read(answer, limits, current);
+        if (read is null)
         {
             await usage.RefundAsync(workspaceId, now);
             return StatusCode(502, new { error = "The AI couldn't draft that just now. Try again, or say it another way.", code = "ai_unavailable" });
         }
+        // An Approval the planner left without approvers asks whoever drafted it, so it can run as drafted.
+        var draft = FlowPlanner.WithDefaultApprovers(read, Sub);
 
         var errors = DefinitionRules.Validate(draft.Definition, limits);
         var apps = FlowCatalog.AppsNeeded(draft.Definition).Select(a => new AiAppDto(a, a == "orbit" ? "Vantra Orbit" : "Vantra Projects", context.Connected.Contains(a), true))
