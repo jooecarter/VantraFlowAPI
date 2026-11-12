@@ -22,7 +22,7 @@ namespace VantraFlow.Api.Controllers;
 /// (<c>amr: otp</c>): 403 <c>two_factor_required</c> otherwise. The assertion says so too, and the app checks again.
 /// </summary>
 public sealed class ConnectionsController(WorkspacesRepository workspaces, ConnectionsRepository repo, AppConnectors apps, Connections connections,
-    TwoFactorSignIn twoFactor, ILogger<ConnectionsController> log)
+    TwoFactorSignIn twoFactor, VantraFlow.Api.Shared.ISharedDirectory shared, ILogger<ConnectionsController> log)
     : FlowControllerBase(workspaces)
 {
     /// <summary>Null when this session may connect apps; otherwise why not (it didn't pass the person's two-step sign-in).</summary>
@@ -54,9 +54,22 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         if (refusal is not null) return refusal;
         if (apps.For(app) is not { } api) return NotFound(new { error = "Vantra Flow doesn't connect to that app." });
         if (await SecondStepRefusalAsync(ct) is { } stop) return stop;
-        try { return Ok(await api.WorkspacesAsync(api.Assertion(Sub, DisplayName, workspaceId, PassedSecondStep), ct)); }
+        IReadOnlyList<AppWorkspace> list;
+        try { list = await api.WorkspacesAsync(api.Assertion(Sub, DisplayName, workspaceId, PassedSecondStep), ct); }
         catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
         catch (AppRefusedException e) { return StatusCode(e.Status is 401 or 403 ? 403 : 400, new { error = e.Message, code = e.Code }); }
+        return Ok(AppWorkspaceLooks.Apply(app, list, await SharedPlacesAsync()));
+    }
+
+    /// <summary>Your shared workspaces, for their logos and colours: none before the shared tables exist or when they can't be read.</summary>
+    private async Task<IReadOnlyList<VantraFlow.Api.Shared.SharedPlace>> SharedPlacesAsync()
+    {
+        try { return await shared.PlacesAsync(Sub); }
+        catch (Exception e) when (e is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or TimeoutException)
+        {
+            log.LogInformation("Shared workspace looks unavailable for the connect list ({Kind}).", e.GetType().Name);
+            return [];
+        }
     }
 
     [HttpPost("api/w/{workspaceId:guid}/apps/{app}/connect")]
