@@ -15,7 +15,7 @@ namespace VantraFlow.Api.Controllers;
 /// POST   api/w/{ws}/flows                         { name, description, definition, templateId } → 201
 /// GET    api/w/{ws}/flows/{id}
 /// PUT    api/w/{ws}/flows/{id}                    { name, description, definition } → { flow, errors }
-/// POST   api/w/{ws}/flows/{id}/enable             { enabled } → the flow, or 422 { errors }
+/// POST   api/w/{ws}/flows/{id}/enable             { enabled } → the flow, or 422 { errors }, or 402 { code, upgradeTo } (the plan)
 /// DELETE api/w/{ws}/flows/{id}
 /// POST   api/w/{ws}/flows/{id}/hook-secret        { signed } → { secret } once (a webhook trigger's HMAC secret)
 /// POST   api/w/{ws}/flows/{id}/sample             { definition } → { trigger, real } — data to test with
@@ -32,8 +32,17 @@ namespace VantraFlow.Api.Controllers;
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
-    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, StepsRepository steps) : FlowControllerBase(workspaces)
+    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
+    StepsRepository steps)
+    : FlowControllerBase(workspaces)
 {
+    /// <summary>
+    /// 402 with what the plan doesn't cover (<c>plan_flows</c>, <c>plan_premium</c>) and the cheapest tier that does
+    /// (<c>upgradeTo</c>), so the studio can offer the upgrade.
+    /// </summary>
+    private ObjectResult PlanRefused(Services.Billing.PlanBlock block, string? message = null) =>
+        StatusCode(402, new { error = message ?? block.Message, code = block.Code, upgradeTo = block.UpgradeTo });
+
     private FlowLimits Limits => FlowLimits.From(config);
 
     [HttpGet("api/w/{workspaceId:guid}/flows")]
@@ -95,6 +104,9 @@ public sealed class FlowsController(
         var errors = DefinitionRules.Validate(def, Limits);
         if (f.Enabled && errors.Count > 0)
             return UnprocessableEntity(new { error = "Fix these before saving, or switch the flow off first.", errors });
+        // A flow that's on can't take on premium steps its plan doesn't include (switched off, it can).
+        if (f.Enabled && await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanSaveOnAsync(wsRow, def, DateTime.UtcNow) is { } block)
+            return PlanRefused(block, block.Message.Replace(" Upgrade to switch this flow on.", " Switch the flow off to save this, or upgrade."));
         var updated = Shape(f with { Name = name, Description = description, UpdatedBy = Sub, UpdatedAt = DateTime.UtcNow }, def);
         await flows.UpdateAsync(updated);
         var saved = (await flows.GetAsync(workspaceId, id))!;
@@ -185,6 +197,9 @@ public sealed class FlowsController(
             if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
                 errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
             if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
+            // The plan: its active-flow limit, and premium apps and steps.
+            if (await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)
+                return PlanRefused(block);
         }
         await flows.SetEnabledAsync(workspaceId, id, body.Enabled, Sub);
         if (body.Enabled) await JoinSlackAsync(workspaceId, def, ct);

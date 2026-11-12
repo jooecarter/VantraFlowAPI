@@ -38,6 +38,7 @@ public sealed class FlowSignal
 /// steps (<see cref="RunExecutor"/>) and save the log.</item>
 /// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), and send the
 /// failure alerts that are due (<see cref="FailureAlerts"/>, db/002).</item>
+/// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008).</item>
 /// <item><b>Hourly</b>: prune old claims, dead events, and runs older than <c>Flow:KeepRunsDays</c>.</item>
 /// </list>
 /// Before db/001 it checks once a minute and does nothing else. Multi-instance safe; App Service needs
@@ -52,6 +53,7 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
     private readonly string me = Id();
     private DateTime nextMinute = DateTime.MinValue;
     private DateTime nextPrune = DateTime.MinValue;
+    private DateTime nextPlans = DateTime.MinValue;
     private bool waitingLogged;
 
     private static string Id()
@@ -169,6 +171,15 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Poll tick failed"); }
         }
 
+        // Plans (db/008), every five minutes: trials start once billing is live, owners hear before one ends, and
+        // flows a smaller plan doesn't cover are switched off (never deleted).
+        if (now >= nextPlans)
+        {
+            nextPlans = now.AddMinutes(5);
+            try { await sp.GetRequiredService<Billing.Plans>().SweepAsync(DateTime.UtcNow, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Plans sweep failed"); }
+        }
+
         // 4. Housekeeping.
         if (now >= nextPrune)
         {
@@ -183,6 +194,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
                     await sp.GetRequiredService<StepsRepository>().PruneAsync(now, int.TryParse(config["Flow:KeepRunsDays"], out var keep) ? Math.Clamp(keep, 7, 365) : 30);
             }
             catch (Exception ex) { log.LogInformation(ex, "Approvals prune failed"); }
+            try { if (await sp.GetRequiredService<FlowSchema>().PlansReadyAsync()) await sp.GetRequiredService<PlansRepository>().PruneAsync(now.AddDays(-30)); }
+            catch (Exception ex) { log.LogInformation(ex, "Billing prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;

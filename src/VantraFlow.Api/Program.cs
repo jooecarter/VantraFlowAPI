@@ -73,6 +73,12 @@ builder.Services.AddScoped<IWorkspaceTeardown, WorkspaceTeardown>();
 builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
 
+// Plans and billing (db/008): Flow's tiers and limits (Billing:*), Stripe (Stripe:*), and the plan in force.
+builder.Services.AddSingleton(sp => VantraFlow.Api.Services.Billing.PlanCatalog.From(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton<VantraFlow.Api.Services.Billing.StripeBilling>();
+builder.Services.AddScoped<PlansRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Billing.Plans>();
+
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
 // Two-step sign-in: Orbit's and Projects', asked server to server (Services/Auth/TwoFactorSignIn.cs).
