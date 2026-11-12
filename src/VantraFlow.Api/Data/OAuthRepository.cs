@@ -28,6 +28,15 @@ public sealed class OAuthRepository(SqlConnectionFactory factory)
             new { WorkspaceId = workspaceId, Provider = provider });
     }
 
+    /// <summary>The newest connection to a provider, live or not (to name a mailbox that was disconnected).</summary>
+    public async Task<OAuthConnectionRow?> LatestAsync(Guid workspaceId, string provider)
+    {
+        using var conn = factory.Flow();
+        return await conn.QuerySingleOrDefaultAsync<OAuthConnectionRow>(
+            $"SELECT TOP (1) {Cols} FROM flow.OAuthConnections WHERE WorkspaceId = @WorkspaceId AND Provider = @Provider ORDER BY ConnectedAt DESC;",
+            new { WorkspaceId = workspaceId, Provider = provider });
+    }
+
     /// <summary>The live Slack connections to one Slack workspace (its events go to each).</summary>
     public async Task<IReadOnlyList<OAuthConnectionRow>> ByTeamAsync(string teamId)
     {

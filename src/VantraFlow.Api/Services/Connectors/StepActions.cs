@@ -16,7 +16,8 @@ namespace VantraFlow.Api.Services.Connectors;
 /// connect time; no redirects). Never logs a key, a secret or a request's headers.
 /// </summary>
 public sealed partial class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
-    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema, Ai.AiSteps ai)
+    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema, Ai.AiSteps ai,
+    Mail.Senders senders)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -82,6 +83,12 @@ public sealed partial class StepActions(Connections connections, EmailService em
 
     // ── Email ──
 
+    /// <summary>
+    /// The Send email step: from Vantra Flow's own mailbox, as before, or — with <c>from</c> — the workspace's Microsoft 365 or
+    /// Google account or an SMTP mailbox (<see cref="Mail.Senders"/>); "Workspace default" (or no <c>from</c>, as every older
+    /// flow) takes the workspace's default, and with none, Vantra Flow. Each person gets their own email, within the
+    /// workspace's daily cap. The output names who sent it (<c>sentFrom</c>).
+    /// </summary>
     private async Task<StepOutcome> EmailAsync(StepCall call, CancellationToken ct)
     {
         var to = Recipients(Tokens.Text(call.Input["to"]));
@@ -89,24 +96,51 @@ public sealed partial class StepActions(Connections connections, EmailService em
         var subject = Tokens.Text(call.Input["subject"]).Trim();
         if (subject.Length == 0) return StepOutcome.Fail("The subject is empty.");
         if (subject.Length > 200) subject = subject[..200];
-        if (!email.CanSend()) return StepOutcome.Fail("Email isn't set up on this server yet.");
+        if (Mail.SenderRules.Parse(call.Input["from"]) is not { } chosen) return StepOutcome.Fail("Choose who the email is sent from.");
+        var who = await senders.ResolveAsync(call.WorkspaceId, chosen);
         var body = Tokens.Text(call.Input["body"]);
         var replyTo = Tokens.Text(call.Input["replyTo"]).Trim();
-        var fromName = Tokens.Text(call.Input["fromName"]).Trim() is { Length: > 0 } n ? n : "Vantra Flow";
-        var html = Html(body);
+        var named = Tokens.Text(call.Input["fromName"]).Trim();
         var sent = new JsonArray();
+        if (!who.Own)
+        {
+            if (!email.CanSend()) return StepOutcome.Fail("Email isn't set up on this server yet.");
+            var fromName = named is { Length: > 0 } n ? n : "Vantra Flow";
+            var html = Html(body);
+            foreach (var address in to.List)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!await engine.CountEmailAsync(call.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
+                    return StepOutcome.Fail($"This workspace has sent its {limits.EmailsPerDay} emails for today.");
+                if (!await email.SendAsync(replyTo, fromName, address, "", subject, html))
+                    return sent.Count == 0
+                        ? StepOutcome.Fail("The email couldn't be sent.", retryable: true)
+                        : StepOutcome.Fail($"Sent to {sent.Count}, then the email couldn't be sent to {address}.");
+                sent.Add(address);
+            }
+            return StepOutcome.Done(new JsonObject { ["to"] = sent, ["subject"] = subject, ["sent"] = sent.Count, ["sentFrom"] = senders.Vantra().Output() });
+        }
+
+        // An own mailbox: as the person's Outlook or Gmail (the same code as those apps' send actions), or SMTP.
+        var from = await senders.OpenAsync(call.WorkspaceId, who);
+        if (!from.Ok) return StepOutcome.Fail(from.Error!, retryable: from.Retryable);
+        if (replyTo.Length > 0 && Recipients(replyTo) is { Error: null, List.Count: 1 } r) replyTo = r.List[0];
+        else if (replyTo.Length > 0) return StepOutcome.Fail($"The reply-to “{replyTo}” isn't one email address.");
+        var own = OAuth.OAuthActions.Html(body);
         foreach (var address in to.List)
         {
             ct.ThrowIfCancellationRequested();
             if (!await engine.CountEmailAsync(call.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
                 return StepOutcome.Fail($"This workspace has sent its {limits.EmailsPerDay} emails for today.");
-            if (!await email.SendAsync(replyTo, fromName, address, "", subject, html))
+            var result = await senders.SendAsync(call.WorkspaceId, from, new Mail.OutgoingMail(address, OAuth.OAuthActions.OneLine(subject), own, replyTo.Length > 0 ? replyTo : null,
+                named.Length > 0 ? named : null), ct);
+            if (!result.Ok)
                 return sent.Count == 0
-                    ? StepOutcome.Fail("The email couldn't be sent.", retryable: true)
-                    : StepOutcome.Fail($"Sent to {sent.Count}, then the email couldn't be sent to {address}.");
+                    ? StepOutcome.Fail(result.Error!, retryable: result.Retryable)
+                    : StepOutcome.Fail($"Sent to {sent.Count}, then: {result.Error}");
             sent.Add(address);
         }
-        return StepOutcome.Done(new JsonObject { ["to"] = sent, ["subject"] = subject, ["sent"] = sent.Count });
+        return StepOutcome.Done(new JsonObject { ["to"] = sent, ["subject"] = subject, ["sent"] = sent.Count, ["sentFrom"] = from.Output() });
     }
 
     public static (List<string> List, string? Error) Recipients(string raw)

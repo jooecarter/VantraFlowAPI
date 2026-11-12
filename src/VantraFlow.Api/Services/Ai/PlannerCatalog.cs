@@ -40,7 +40,11 @@ public static class PlannerCatalog
             "dueWithinDays: number", "limit: number"], "count", "names", "first.id", "first.name", "tasks (a list)"),
         ["projects/task.update"] = H(["status: a column name, e.g. In Review", "assignee: an email", "dueDate: yyyy-MM-dd"], "id", "name", "status", "url"),
         ["projects/task.comment"] = H([], "id", "taskId"),
-        ["email/send"] = H(["body: the message (plain text)", "replyTo: an email"], "to", "subject"),
+        ["email/send"] = H(["body: the message (plain text)", "replyTo: an email",
+            "from: who sends it. Leave it out for the workspace's default sender (what most flows want). \"vantraflow\": Vantra Flow's own mailbox; " +
+            "\"microsoft\": the connected Outlook account; \"google\": the connected Gmail account (only when the request asks to send as them and that app is connected). " +
+            "SMTP mailboxes are picked by the person: never write an smtp: value",
+            "fromName: the name the email is from (Vantra Flow and SMTP mailboxes)"], "to", "subject", "sent", "sentFrom.email"),
         ["http/request"] = H(["method: POST | GET | PUT | PATCH | DELETE (default POST)", "query: object of parameter name to value",
             "headers: object of header name to value (never put secrets here: leave them for the person to add)",
             "bodyType: json | form | raw (default json)", "body: text (JSON for json)", "form: object of field name to value (for form)",

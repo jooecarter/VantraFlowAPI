@@ -88,6 +88,7 @@ public static class PlanRules
         [StepTypes.Paths] = "Paths",
         ["approval"] = "Approvals",
         ["ai"] = "AI steps",
+        ["smtp"] = "SMTP mailboxes",
     };
 
     public static string Label(string key) => Labels.TryGetValue(key, out var l) ? l : char.ToUpperInvariant(key[0]) + key[1..];
@@ -101,6 +102,9 @@ public static class PlanRules
         {
             if (catalog.PremiumSteps.Contains(s.Type)) uses.Add(new(s.Id, Label(s.Type)));
             else if (s.Type == StepTypes.Action && catalog.IsPremium(s.App, s.Action, trigger: false)) uses.Add(new(s.Id, Label(s.App!)));
+            // Send email from an own mailbox counts as that mailbox's app (Outlook as Microsoft 365, Gmail as Google, SMTP as smtp).
+            else if (s.Type == StepTypes.Action && s.App == "email" && Mail.SenderRules.PremiumApp(s.Config["from"]) is { } mailbox && catalog.PremiumApps.Contains(mailbox))
+                uses.Add(new(s.Id, Label(mailbox)));
         }
         return uses;
     }

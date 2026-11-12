@@ -19,6 +19,8 @@
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="Google.Apis.Auth" Version="1.75.0" />
+    <!-- SMTP mailboxes: STARTTLS and SSL/TLS, sign-in checked without sending, over a socket NetworkGuard has checked (as Orbit). -->
+    <PackageReference Include="MailKit" Version="4.18.2" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />

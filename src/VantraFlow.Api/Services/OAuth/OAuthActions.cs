@@ -84,16 +84,34 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
         if (cc.Error is not null) return StepOutcome.Fail($"Cc: {cc.Error}");
         var subject = OneLine(Tokens.Text(input["subject"]));
         if (subject.Length == 0) return StepOutcome.Fail("The subject is empty.");
+        await SendMailAsync(ws, "microsoft", to.List, cc.List, subject, Html(Tokens.Text(input["body"])), null, ct);
+        return StepOutcome.Done(new JsonObject { ["to"] = new JsonArray(to.List.Select(a => (JsonNode)a).ToArray()), ["subject"] = subject, ["sent"] = to.List.Count });
+    }
+
+    /// <summary>
+    /// Sends one email as the workspace's Microsoft 365 (Outlook, Graph <c>me/sendMail</c>) or Google (Gmail) account: the
+    /// "Send email (Outlook)" and "Send email (Gmail)" actions, and the Send email step set to send from one of them. What
+    /// the provider answered (Gmail: the message's id and thread); throws the app exceptions the engine knows.
+    /// </summary>
+    public async Task<JsonNode?> SendMailAsync(Guid ws, string provider, IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html, string? replyTo,
+        CancellationToken ct)
+    {
+        if (provider == "google")
+        {
+            var raw = Mime(to, cc, subject, html, replyTo);
+            return await connections.CallAsync(ws, "google", s => s.Provider.SendAsync(HttpMethod.Post,
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", s.Token, new JsonObject { ["raw"] = raw }, ct), ct);
+        }
         var message = new JsonObject
         {
             ["subject"] = subject,
-            ["body"] = new JsonObject { ["contentType"] = "HTML", ["content"] = Html(Tokens.Text(input["body"])) },
-            ["toRecipients"] = Addresses(to.List),
+            ["body"] = new JsonObject { ["contentType"] = "HTML", ["content"] = html },
+            ["toRecipients"] = Addresses(to),
         };
-        if (cc.List.Count > 0) message["ccRecipients"] = Addresses(cc.List);
-        await connections.CallAsync(ws, "microsoft", s => s.Provider.SendAsync(HttpMethod.Post, MicrosoftProvider.Graph + "me/sendMail", s.Token,
+        if (cc.Count > 0) message["ccRecipients"] = Addresses(cc);
+        if (replyTo is { Length: > 0 }) message["replyTo"] = Addresses([replyTo]);
+        return await connections.CallAsync(ws, "microsoft", s => s.Provider.SendAsync(HttpMethod.Post, MicrosoftProvider.Graph + "me/sendMail", s.Token,
             new JsonObject { ["message"] = message, ["saveToSentItems"] = true }, ct), ct);
-        return StepOutcome.Done(new JsonObject { ["to"] = new JsonArray(to.List.Select(a => (JsonNode)a).ToArray()), ["subject"] = subject, ["sent"] = to.List.Count });
     }
 
     private async Task<StepOutcome> TeamsPostAsync(Guid ws, string teamId, string channelId, string text, CancellationToken ct)
@@ -152,9 +170,7 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
         if (cc.Error is not null) return StepOutcome.Fail($"Cc: {cc.Error}");
         var subject = OneLine(Tokens.Text(input["subject"]));
         if (subject.Length == 0) return StepOutcome.Fail("The subject is empty.");
-        var raw = Mime(to.List, cc.List, subject, Html(Tokens.Text(input["body"])));
-        var res = await connections.CallAsync(ws, "google", s => s.Provider.SendAsync(HttpMethod.Post,
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", s.Token, new JsonObject { ["raw"] = raw }, ct), ct);
+        var res = await SendMailAsync(ws, "google", to.List, cc.List, subject, Html(Tokens.Text(input["body"])), null, ct);
         return StepOutcome.Done(new JsonObject
         {
             ["id"] = Tokens.Text(res?["id"]), ["threadId"] = Tokens.Text(res?["threadId"]),
@@ -163,11 +179,12 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
     }
 
     /// <summary>An email as Gmail takes it: RFC 5322, base64url. Headers can't carry a line break, so a token can't add one.</summary>
-    public static string Mime(IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html)
+    public static string Mime(IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html, string? replyTo = null)
     {
         var sb = new StringBuilder();
         sb.Append("To: ").Append(string.Join(", ", to)).Append("\r\n");
         if (cc.Count > 0) sb.Append("Cc: ").Append(string.Join(", ", cc)).Append("\r\n");
+        if (replyTo is { Length: > 0 } && OneLine(replyTo) is var reply && !reply.Contains(' ')) sb.Append("Reply-To: ").Append(reply).Append("\r\n");
         sb.Append("Subject: =?UTF-8?B?").Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(OneLine(subject)))).Append("?=\r\n");
         sb.Append("MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
         var body = Convert.ToBase64String(Encoding.UTF8.GetBytes(html));
