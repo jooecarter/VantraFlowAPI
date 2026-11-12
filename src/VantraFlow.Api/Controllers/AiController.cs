@@ -22,12 +22,13 @@ namespace VantraFlow.Api.Controllers;
 /// held to the catalog and checked as a save would be (<c>errors</c>: what's left to fill in); <c>apps</c> are the apps it
 /// needs, connected or not. Any member may draft (members make flows). Until <c>OpenAI:ApiKey</c> and <c>OpenAI:Model</c>
 /// are set: 503 <c>not_configured</c>; until db/006 has run: 503 <c>not_ready</c>. Each draft counts against the
-/// workspace's month (<c>Ai:MonthlyCap</c>; 402 <c>ai_cap</c> when spent, refunded when the call fails), and drafting is
+/// workspace's month: its plan's AI credits (db/008; Free and Starter have none), under <c>Ai:MonthlyCap</c> when set
+/// (402 <c>plan_ai</c> with <c>upgradeTo</c>, or <c>ai_cap</c>, when spent; refunded when the call fails), and drafting is
 /// rate-limited per person (<see cref="RateLimitPolicy"/>) and per workspace (<see cref="AiClient.PerWorkspacePerMinute"/>).
 /// </summary>
 public sealed class AiController(
     WorkspacesRepository workspaces, AiRepository usage, AiClient ai, FlowSchema schema, ConnectionsRepository connectionRows, Connections connections,
-    OAuthRepository oauth, OAuthProviders providers, IConfiguration config, ILogger<AiController> log) : FlowControllerBase(workspaces)
+    OAuthRepository oauth, OAuthProviders providers, Services.Billing.Plans plans, IConfiguration config, ILogger<AiController> log) : FlowControllerBase(workspaces)
 {
     public const string RateLimitPolicy = "ai";
 
@@ -38,7 +39,23 @@ public sealed class AiController(
         if (refusal is not null) return refusal;
         var ready = await schema.InsightsReadyAsync();
         var now = DateTime.UtcNow;
-        return Ok(new AiStatusDto(ai.Configured, ready, ready ? await usage.UsedAsync(workspaceId, now) : 0, ai.MonthlyCap, Services.Insights.InsightsReport.UsageMonth(now)));
+        var (cap, upgradeTo) = await CapAsync(workspaceId, now);
+        var used = ready ? await usage.UsedAsync(workspaceId, now) : 0;
+        return Ok(new AiStatusDto(ai.Configured, ready, used, cap, Services.Insights.InsightsReport.UsageMonth(now), used >= cap ? upgradeTo : null));
+    }
+
+    /// <summary>
+    /// The workspace's drafts this month (its plan's AI credits, <see cref="AiClient.CapFor"/>), and the cheapest tier with
+    /// more, for the upgrade prompt (null before plans are in force, or when no tier has more).
+    /// </summary>
+    private async Task<(int Cap, string? UpgradeTo)> CapAsync(Guid workspaceId, DateTime now)
+    {
+        var ws = (await Workspaces.GetAsync(workspaceId))!;
+        var (plan, _) = await plans.ForAsync(ws, now);
+        var cap = AiClient.CapFor(plan.Enforced, plan.Limits.AiCredits, ai.ConfiguredCap);
+        if (!plan.Enforced) return (cap, null);
+        var to = plans.Catalog.Cheapest(l => AiClient.CapFor(true, l.AiCredits, ai.ConfiguredCap) > cap);
+        return (cap, to != plan.Tier && AiClient.CapFor(true, plans.Catalog.For(to).AiCredits, ai.ConfiguredCap) > cap ? to : null);
     }
 
     [HttpPost("api/w/{workspaceId:guid}/ai/draft")]
@@ -62,11 +79,16 @@ public sealed class AiController(
             return StatusCode(429, new { error = "This workspace is drafting a lot right now. Try again in a minute.", code = "rate_limited" });
 
         var now = DateTime.UtcNow;
-        var cap = ai.MonthlyCap;
+        var (cap, upgradeTo) = await CapAsync(workspaceId, now);
         var (ok, used) = await usage.TryCountAsync(workspaceId, now, cap);
         if (!ok)
-            return StatusCode(402, new { error = $"This workspace has used its {cap:N0} AI drafts for the month. They reset on the 1st.", code = "ai_cap",
-                usage = new AiUsageDto(used, cap, Services.Insights.InsightsReport.UsageMonth(now)) });
+            return StatusCode(402, new
+            {
+                error = cap == 0 ? $"Drafting with AI comes with {Services.Billing.Tiers.Name(upgradeTo ?? Services.Billing.Tiers.Pro)}."
+                    : $"This workspace has used its {cap:N0} AI credits for the month. They reset on the 1st.",
+                code = upgradeTo is null ? "ai_cap" : "plan_ai", upgradeTo,
+                usage = new AiUsageDto(used, cap, Services.Insights.InsightsReport.UsageMonth(now)),
+            });
 
         var ws = (await Workspaces.GetAsync(workspaceId))!;
         var context = await ContextAsync(workspaceId, ws.TimeZone, current, ct);
@@ -135,7 +157,8 @@ public sealed class AiController(
 
 public sealed record AiDraftBody(string? Prompt, JsonNode? Definition);
 
-public sealed record AiStatusDto(bool Configured, bool Ready, int Used, int Cap, string Month);
+/// <summary><c>UpgradeTo</c>: the credits are spent (or the plan has none) and this tier has more.</summary>
+public sealed record AiStatusDto(bool Configured, bool Ready, int Used, int Cap, string Month, string? UpgradeTo = null);
 
 public sealed record AiUsageDto(int Used, int Cap, string Month);
 

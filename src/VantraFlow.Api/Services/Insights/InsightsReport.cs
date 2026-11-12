@@ -166,17 +166,17 @@ public static class InsightsReport
 }
 
 /// <summary>
-/// The monthly runs a workspace may use: Insights reads it here, and only here. Today it's the workspace's own
-/// quota (<c>flow.Workspaces.MonthlyRunQuota</c>) or the server's default (<c>Flow:MonthlyRuns</c>); plans can plug in
-/// their own by registering another <see cref="IRunLimits"/>.
+/// The monthly runs a workspace may use: Insights reads it here, and only here. It's the plan's quota (db/008), or the
+/// workspace's own where it has one set by hand (<see cref="Billing.PlanRules.RunQuota"/>); before plans are in force,
+/// the server's default (<c>Flow:MonthlyRuns</c>).
 /// </summary>
 public interface IRunLimits
 {
     Task<int> MonthlyRunsAsync(WorkspaceRow workspace, CancellationToken ct = default);
 }
 
-public sealed class ConfiguredRunLimits(FlowLimits limits) : IRunLimits
+public sealed class PlanRunLimits(Billing.Plans plans) : IRunLimits
 {
-    public Task<int> MonthlyRunsAsync(WorkspaceRow workspace, CancellationToken ct = default) =>
-        Task.FromResult(workspace.MonthlyRunQuota ?? limits.MonthlyRuns);
+    public async Task<int> MonthlyRunsAsync(WorkspaceRow workspace, CancellationToken ct = default) =>
+        Billing.PlanRules.RunQuota(workspace, (await plans.ForAsync(workspace, DateTime.UtcNow)).Plan);
 }

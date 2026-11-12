@@ -74,12 +74,18 @@ builder.Services.AddScoped<VersionsRepository>();
 builder.Services.AddScoped<FailureAlerts>();
 // Insights (db/006 keeps daily totals past the runs' pruning), and the one place it reads a workspace's run limit.
 builder.Services.AddScoped<InsightsRepository>();
-builder.Services.AddSingleton<VantraFlow.Api.Services.Insights.IRunLimits, VantraFlow.Api.Services.Insights.ConfiguredRunLimits>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Insights.IRunLimits, VantraFlow.Api.Services.Insights.PlanRunLimits>();
 // The AI flow builder: OpenAI:ApiKey and OpenAI:Model (off until both exist), a monthly cap per workspace (Ai:MonthlyCap).
 builder.Services.AddScoped<AiRepository>();
 builder.Services.AddSingleton<VantraFlow.Api.Services.Ai.AiClient>();
 builder.Services.AddHttpClient(VantraFlow.Api.Services.Ai.AiClient.ClientName, c => c.Timeout = TimeSpan.FromSeconds(60))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
+
+// Plans and billing (db/008): Flow's tiers and limits (Billing:*), Stripe (Stripe:*), and the plan in force.
+builder.Services.AddSingleton(sp => VantraFlow.Api.Services.Billing.PlanCatalog.From(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton<VantraFlow.Api.Services.Billing.StripeBilling>();
+builder.Services.AddScoped<PlansRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Billing.Plans>();
 
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();

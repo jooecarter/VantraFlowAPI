@@ -143,14 +143,6 @@ public sealed class InsightsTests
             (InsightsReport.CleanMinutes(-3, 240)!.Value, InsightsReport.CleanMinutes(999, 240)!.Value, InsightsReport.CleanMinutes(1.2549m, 240)!.Value,
                 InsightsReport.CleanMinutes(null, 240)));
 
-    [Fact]
-    public async Task The_run_limit_is_the_workspaces_own_quota_else_the_servers()
-    {
-        var limits = new ConfiguredRunLimits(new Services.Engine.FlowLimits(MonthlyRuns: 5000));
-        Assert.Equal(1200, await limits.MonthlyRunsAsync(new Models.WorkspaceRow(Guid.NewGuid(), "W", "UTC", "o", 1200, Now)));
-        Assert.Equal(5000, await limits.MonthlyRunsAsync(new Models.WorkspaceRow(Guid.NewGuid(), "W", "UTC", "o", null, Now)));
-    }
-
     // ── db/006 ──
 
     private static string Sql => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "db", "006_ai_insights.sql"));

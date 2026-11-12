@@ -57,6 +57,25 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RunSteps_Fa
         return insightsReady;
     }
 
+    /// <summary>db/008 (plans and billing): the index it makes last, by name.</summary>
+    public const string PlansProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorkspacePlans_Customer' AND object_id = OBJECT_ID(N'flow.WorkspacePlans'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool plansReady;
+    private DateTime plansCheckedAt = DateTime.MinValue;
+
+    /// <summary>Has db/008 run? Until it has, plans aren't enforced and Plan &amp; billing says it isn't set up yet.</summary>
+    public async Task<bool> PlansReadyAsync()
+    {
+        if (plansReady) return true;
+        if (DateTime.UtcNow - plansCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        plansReady = await conn.ExecuteScalarAsync<bool>(PlansProbeSql);
+        plansCheckedAt = DateTime.UtcNow;
+        return plansReady;
+    }
+
     private volatile bool invitesReady;
     private DateTime invitesCheckedAt = DateTime.MinValue;
 

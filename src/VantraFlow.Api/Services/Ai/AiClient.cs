@@ -18,8 +18,8 @@ public sealed class AiClient(IHttpClientFactory http, IConfiguration config, ILo
     private const string Url = "https://api.openai.com/v1/chat/completions";
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(45);
 
-    /// <summary>The drafts each workspace gets a month when <c>Ai:MonthlyCap</c> isn't set.</summary>
-    public const int DefaultMonthlyCap = 300;
+    /// <summary>The drafts each workspace gets a month before plans are in force, when <c>Ai:MonthlyCap</c> isn't set (Pro's credits).</summary>
+    public const int DefaultMonthlyCap = 200;
 
     private string? Key => config["OpenAI:ApiKey"] is { Length: > 0 } k ? k : null;
     private string? Model => config["OpenAI:Model"] is { Length: > 0 } m ? m : null;
@@ -27,8 +27,15 @@ public sealed class AiClient(IHttpClientFactory http, IConfiguration config, ILo
     /// <summary>Both settings exist.</summary>
     public bool Configured => Key is not null && Model is not null;
 
-    /// <summary>The monthly draft cap per workspace (<c>Ai:MonthlyCap</c>, default <see cref="DefaultMonthlyCap"/>; 0 turns drafting off).</summary>
-    public int MonthlyCap => int.TryParse(config["Ai:MonthlyCap"], out var cap) && cap >= 0 ? cap : DefaultMonthlyCap;
+    /// <summary><c>Ai:MonthlyCap</c> when set: a ceiling on every workspace's drafts a month (0 turns drafting off).</summary>
+    public int? ConfiguredCap => int.TryParse(config["Ai:MonthlyCap"], out var cap) && cap >= 0 ? cap : null;
+
+    /// <summary>
+    /// A workspace's drafts a month: its plan's AI credits once plans are in force (db/008), held under
+    /// <c>Ai:MonthlyCap</c> when that's set; before, <c>Ai:MonthlyCap</c> or <see cref="DefaultMonthlyCap"/>.
+    /// </summary>
+    public static int CapFor(bool planEnforced, int planCredits, int? configured) =>
+        planEnforced ? Math.Min(planCredits, configured ?? int.MaxValue) : configured ?? DefaultMonthlyCap;
 
     /// <summary>The model's JSON answer, or null when the call failed (logged by status only).</summary>
     public async Task<string?> DraftAsync(string instructions, string request, JsonObject schema, CancellationToken ct)

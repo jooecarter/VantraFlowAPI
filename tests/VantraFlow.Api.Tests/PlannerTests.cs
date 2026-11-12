@@ -234,6 +234,15 @@ public sealed class PlannerTests
     public void Trigger_data_is_read_from_the_catalogs_samples() =>
         Assert.Contains("record.fields.Email", PlannerCatalog.TokensOf(FlowCatalog.Sample(new TriggerDef { App = "orbit", Event = "record.created" }, Now)));
 
+    [Theory]
+    [InlineData(true, 200, null, 200)]   // Pro's credits
+    [InlineData(true, 0, null, 0)]       // Free and Starter: none
+    [InlineData(true, 1000, 300, 300)]   // Ai:MonthlyCap is a ceiling on every plan
+    [InlineData(false, 200, null, 200)]  // before plans are in force: the default
+    [InlineData(false, 200, 50, 50)]     // … or Ai:MonthlyCap
+    public void Drafts_a_month_come_from_the_plan(bool enforced, int credits, int? configured, int cap) =>
+        Assert.Equal(cap, AiClient.CapFor(enforced, credits, configured));
+
     [Fact]
     public void The_per_workspace_share_runs_out()
     {
