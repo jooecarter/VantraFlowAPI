@@ -3,8 +3,16 @@ using VantraFlow.Api.Models;
 
 namespace VantraFlow.Api.Data;
 
+/// <summary>The flows a copy or an import reads and adds to (<see cref="FlowsRepository"/>; a fake in tests).</summary>
+public interface IFlowStore
+{
+    Task<IReadOnlyList<FlowRow>> ListAsync(Guid workspaceId);
+    Task<FlowRow?> GetAsync(Guid workspaceId, string id);
+    Task InsertAsync(FlowRow f);
+}
+
 /// <summary>Flows: the studio's list and editor, and what the engine looks up to start runs.</summary>
-public sealed class FlowsRepository(SqlConnectionFactory factory)
+public sealed class FlowsRepository(SqlConnectionFactory factory) : IFlowStore
 {
     private const string FlowCols =
         "Id, WorkspaceId, Name, Description, Enabled, Definition, Version, TriggerApp, TriggerEvent, TriggerScope, HookId, HookSecretCipher, " +

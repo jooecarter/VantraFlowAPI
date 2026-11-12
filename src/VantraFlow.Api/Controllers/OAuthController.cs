@@ -70,7 +70,12 @@ public sealed class OAuthController(
         if (providers.For(provider) is not { } p) return NotFound(new { error = "Vantra Flow doesn't connect to that app." });
         if (p.ConnectMode == "oauth") return BadRequest(new { error = $"{p.Name} connects with a sign-in.", code = "no_key" });
         if (body.Key is not { Length: > 0 and <= 500 } key) return BadRequest(new { error = "Paste the key.", code = "bad_key" });
-        try { return Ok(connections.Dto(await connections.ConnectKeyAsync(p, workspaceId, key, Sub, DisplayName, ct))); }
+        try
+        {
+            var made = await connections.ConnectKeyAsync(p, workspaceId, key, Sub, DisplayName, ct);
+            await LogAsync(workspaceId, Services.Team.ActivityKinds.ConnectionAdded, detail: $"{p.Name}: {made.AccountName}");
+            return Ok(connections.Dto(made));
+        }
         catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
         catch (AppRefusedException e) { return BadRequest(new { error = e.Message, code = e.Code }); }
         catch (OAuthUnauthorizedException) { return BadRequest(new { error = $"{p.Name} didn't accept that key.", code = "bad_key" }); }
@@ -97,6 +102,7 @@ public sealed class OAuthController(
         if (body.Id is not { Length: > 0 and <= 64 } id) return BadRequest(new { error = "That sign-in can't be found." });
         var row = await connections.FinishAsync(p, workspaceId, id, Sub, DisplayName, ct);
         if (row is null) return StatusCode(410, new { error = $"That {p.Name} sign-in has expired. Connect again.", code = "expired" });
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.ConnectionAdded, detail: $"{p.Name}: {row.AccountName}");
         return Ok(connections.Dto(row));
     }
 
@@ -108,6 +114,7 @@ public sealed class OAuthController(
         if (await NotReadyAsync(provider) is { } nr) return nr;
         if (await repo.LiveAsync(workspaceId, provider) is not { } row) return NoContent();
         await connections.DisconnectAsync(row, ct);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.ConnectionRemoved, detail: $"{providers.For(provider)?.Name ?? provider}: {row.AccountName}");
         return NoContent();
     }
 

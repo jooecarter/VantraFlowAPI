@@ -87,6 +87,15 @@ builder.Services.AddSingleton<VantraFlow.Api.Services.Billing.StripeBilling>();
 builder.Services.AddScoped<PlansRepository>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Billing.Plans>();
 
+// Team and organisation (db/011): folders, tags, owners, comments with @mention emails, the activity log, and moving
+// flows between workspaces (duplicate, export, import).
+builder.Services.AddScoped<TeamRepository>();
+builder.Services.AddScoped<ITeamStore>(sp => sp.GetRequiredService<TeamRepository>());
+builder.Services.AddScoped<IFlowStore>(sp => sp.GetRequiredService<FlowsRepository>());
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IActivityLog, VantraFlow.Api.Services.Team.ActivityLog>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IMentionMail, VantraFlow.Api.Services.Team.MentionMail>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IFirstVersion, VantraFlow.Api.Services.Team.FirstVersion>();
+
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
 // Two-step sign-in: Orbit's and Projects', asked server to server (Services/Auth/TwoFactorSignIn.cs).
@@ -173,6 +182,10 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(AiController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 6, Window = TimeSpan.FromMinutes(1) }));
+    // Comments: 20 a minute per person.
+    o.AddPolicy(CommentsController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
     // Approval email links: 30 a minute per address.
     o.AddPolicy(ApprovalLinksController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",

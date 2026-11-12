@@ -33,7 +33,7 @@ public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
     OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
-    StepsRepository steps)
+    StepsRepository steps, ITeamStore team)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -73,6 +73,8 @@ public sealed class FlowsController(
         await flows.InsertAsync(row);
         var saved = (await flows.GetAsync(workspaceId, row.Id))!;
         await KeepVersionAsync(saved, null);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowCreated, saved.Id, saved.Name, saved.Version,
+            body.TemplateId is { Length: > 0 } ? "From a template" : null);
         return StatusCode(201, new { flow = await DtoAsync(saved), errors = DefinitionRules.Validate(def, Limits) });
     }
 
@@ -111,6 +113,8 @@ public sealed class FlowsController(
         await flows.UpdateAsync(updated);
         var saved = (await flows.GetAsync(workspaceId, id))!;
         await KeepVersionAsync(saved, note);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowEdited, id, saved.Name, saved.Version, note);
+        if (saved.Name != f.Name) await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowRenamed, id, saved.Name, saved.Version, $"Was “{f.Name}”");
         if (f.Enabled)
         {
             await JoinSlackAsync(workspaceId, def, ct);
@@ -119,6 +123,7 @@ public sealed class FlowsController(
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
             {
                 await flows.SetEnabledAsync(workspaceId, id, false, Sub);
+                await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowDisabled, id, saved.Name, saved.Version, "Its app couldn't be reached");
                 return StatusCode(502, new { error = $"Saved, but switched off: {e.Message}", code = "subscribe_failed" });
             }
         }
@@ -212,6 +217,8 @@ public sealed class FlowsController(
                 return StatusCode(502, new { error = e.Message, code = "subscribe_failed" });
             }
         }
+        if (body.Enabled != f.Enabled)
+            await LogAsync(workspaceId, body.Enabled ? Services.Team.ActivityKinds.FlowEnabled : Services.Team.ActivityKinds.FlowDisabled, id, f.Name, f.Version);
         return Ok(await DtoAsync((await flows.GetAsync(workspaceId, id))!));
     }
 
@@ -223,6 +230,8 @@ public sealed class FlowsController(
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoContent();
         await flows.DeleteAsync(workspaceId, id);
         if (await schema.VersionsReadyAsync()) await versions.DeleteAsync(workspaceId, id);
+        if (await team.ReadyAsync()) await team.ForgetFlowAsync(workspaceId, id);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowDeleted, id, f.Name, f.Version);
         try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
         catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException) { /* tidied on the next change */ }
         return NoContent();
@@ -389,7 +398,7 @@ public sealed class FlowsController(
     }
 
     /// <summary>The row's trigger columns from its definition, and a webhook trigger's address made when it first needs one.</summary>
-    private static FlowRow Shape(FlowRow f, FlowDefinition def)
+    internal static FlowRow Shape(FlowRow f, FlowDefinition def)
     {
         var t = def.Trigger;
         var scope = t.App switch

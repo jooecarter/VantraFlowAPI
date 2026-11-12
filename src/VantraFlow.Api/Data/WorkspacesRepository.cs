@@ -252,6 +252,12 @@ IF OBJECT_ID(N'flow.OAuthPending', N'U') IS NOT NULL DELETE FROM flow.OAuthPendi
 IF OBJECT_ID(N'flow.OAuthConnections', N'U') IS NOT NULL DELETE FROM flow.OAuthConnections WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.Invites', N'U') IS NOT NULL DELETE FROM flow.Invites WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.RunDays', N'U') IS NOT NULL DELETE FROM flow.RunDays WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.FlowTags', N'U') IS NOT NULL DELETE FROM flow.FlowTags WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.Tags', N'U') IS NOT NULL DELETE FROM flow.Tags WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.Folders', N'U') IS NOT NULL DELETE FROM flow.Folders WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.FlowComments', N'U') IS NOT NULL DELETE FROM flow.FlowComments WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.MentionNotices', N'U') IS NOT NULL DELETE FROM flow.MentionNotices WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.Activity', N'U') IS NOT NULL DELETE FROM flow.Activity WHERE WorkspaceId = @WorkspaceId;
 DELETE s FROM flow.RunSteps s WHERE s.RunId IN (SELECT r.Id FROM flow.Runs r WHERE r.WorkspaceId = @WorkspaceId);
 DELETE FROM flow.Runs WHERE WorkspaceId = @WorkspaceId;
 DELETE FROM flow.Events WHERE WorkspaceId = @WorkspaceId;
