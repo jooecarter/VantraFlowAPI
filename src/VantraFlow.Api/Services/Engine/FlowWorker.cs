@@ -184,7 +184,12 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
         if (now >= nextPrune)
         {
             nextPrune = now.AddHours(1);
-            try { await engine.PruneAsync(now, int.TryParse(config["Flow:KeepRunsDays"], out var d) ? Math.Clamp(d, 7, 365) : 30); }
+            try
+            {
+                // Once db/006 has run, the runs it prunes are kept as each flow's daily totals (Insights reaches back 90 days).
+                var keepDays = await sp.GetRequiredService<FlowSchema>().InsightsReadyAsync();
+                await engine.PruneAsync(now, int.TryParse(config["Flow:KeepRunsDays"], out var d) ? Math.Clamp(d, 7, 365) : 30, keepDays);
+            }
             catch (Exception ex) { log.LogInformation(ex, "Flow prune failed"); }
             try { if (await sp.GetRequiredService<FlowSchema>().ConnectorsReadyAsync()) await sp.GetRequiredService<OAuthRepository>().PruneAsync(now); }
             catch (Exception ex) { log.LogInformation(ex, "Connector prune failed"); }

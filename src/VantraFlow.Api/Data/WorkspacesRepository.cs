@@ -206,7 +206,7 @@ SELECT
 
     /// <summary>
     /// The run history goes first, in batches (it can be large); then, in one transaction, everything else — the
-    /// flows, their versions, connections, subscriptions, outside-app tokens, poll cursors, invitations, usage — and
+    /// flows, their versions, connections, subscriptions, outside-app tokens, poll cursors, invitations, daily run totals, usage — and
     /// the members and the workspace last. A failure part way leaves the workspace (and its owners) in place, so
     /// deleting again finishes the job. Tables from a later migration that hasn't run are skipped. (A step already
     /// running as it goes may still write its log line; the hourly prune takes that with the old runs.)
@@ -251,6 +251,7 @@ IF OBJECT_ID(N'flow.PollCursors', N'U') IS NOT NULL DELETE FROM flow.PollCursors
 IF OBJECT_ID(N'flow.OAuthPending', N'U') IS NOT NULL DELETE FROM flow.OAuthPending WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.OAuthConnections', N'U') IS NOT NULL DELETE FROM flow.OAuthConnections WHERE WorkspaceId = @WorkspaceId;
 IF OBJECT_ID(N'flow.Invites', N'U') IS NOT NULL DELETE FROM flow.Invites WHERE WorkspaceId = @WorkspaceId;
+IF OBJECT_ID(N'flow.RunDays', N'U') IS NOT NULL DELETE FROM flow.RunDays WHERE WorkspaceId = @WorkspaceId;
 DELETE s FROM flow.RunSteps s WHERE s.RunId IN (SELECT r.Id FROM flow.Runs r WHERE r.WorkspaceId = @WorkspaceId);
 DELETE FROM flow.Runs WHERE WorkspaceId = @WorkspaceId;
 DELETE FROM flow.Events WHERE WorkspaceId = @WorkspaceId;

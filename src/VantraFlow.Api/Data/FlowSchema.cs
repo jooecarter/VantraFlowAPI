@@ -35,6 +35,28 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PollCursors
 SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Invites_Token' AND object_id = OBJECT_ID(N'flow.Invites'))
             THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
 
+    /// <summary>db/006 (the AI builder and Insights): the index it makes last, by name.</summary>
+    public const string InsightsProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RunSteps_Failed' AND object_id = OBJECT_ID(N'flow.RunSteps'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool insightsReady;
+    private DateTime insightsCheckedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Has db/006 run? Until it has, the AI builder is "Not set up yet", Insights reads only the runs still kept and hides
+    /// its time-saved settings, and pruning keeps no daily totals.
+    /// </summary>
+    public async Task<bool> InsightsReadyAsync()
+    {
+        if (insightsReady) return true;
+        if (DateTime.UtcNow - insightsCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        insightsReady = await conn.ExecuteScalarAsync<bool>(InsightsProbeSql);
+        insightsCheckedAt = DateTime.UtcNow;
+        return insightsReady;
+    }
+
     /// <summary>db/007 (secrets, approvals, webhook samples, Stripe, HubSpot and Xero): the index it makes last, by name.</summary>
     public const string StepsProbeSql = @"
 SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Approvals_Inbox' AND object_id = OBJECT_ID(N'flow.Approvals'))
