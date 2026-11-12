@@ -2,7 +2,7 @@ namespace VantraFlow.Api.Services.Engine;
 
 /// <summary>
 /// Where a run is: a path to a step, e.g. <c>2</c> (the third top-level step), <c>2.t.0</c> (the first step on
-/// that branch's "then" side), <c>2.e.1</c>, or <c>3.d.0</c> (the first step a loop repeats). Stored on the run (flow.Runs.Position) so a run waiting on a delay
+/// that branch's "then" side), <c>2.e.1</c>, <c>3.d.0</c> (the first step a loop repeats) or <c>1.x.0</c> (the first step of a step's error path). Stored on the run (flow.Runs.Position) so a run waiting on a delay
 /// or a retry picks up exactly there, on the definition it started with.
 /// </summary>
 public static class Positions
@@ -40,6 +40,8 @@ public static class Positions
             parts = parts[..^2]; // up to the branch or loop step itself
             // The end of a loop's steps goes back to the loop: the next item, or on past it.
             if (side == "d") return string.Join('.', parts);
+            // The end of an error path goes back to the step that failed, which then stops the run (or the item).
+            if (side == "x") return string.Join('.', parts);
         }
     }
 
@@ -55,6 +57,42 @@ public static class Positions
         for (var i = 1; i < parts.Length; i++)
             if (parts[i] == "d") return string.Join('.', parts[..i]);
         return null;
+    }
+
+    /// <summary>Into a step's error path (<c>{step}.x.0</c>); null when it has none.</summary>
+    public static string? EnterErrorPath(FlowDefinition def, string stepPath) =>
+        StepAt(def, stepPath)?.ErrorPath is { Count: > 0 } ? $"{stepPath}.x.0" : null;
+
+    /// <summary>The step that owns the outermost error path a position is inside (the path before its first <c>.x.</c>), or null.</summary>
+    public static string? ErrorOwnerOf(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        var parts = path.Split('.');
+        for (var i = 1; i < parts.Length; i++)
+            if (parts[i] == "x") return string.Join('.', parts[..i]);
+        return null;
+    }
+
+    /// <summary>Where the step <paramref name="stepId"/> is in <paramref name="def"/>, or null when it isn't there.</summary>
+    public static string? PathOf(FlowDefinition def, string stepId)
+    {
+        string? Find(List<StepDef> list, string prefix)
+        {
+            for (var i = 0; i < list.Count; i++)
+            {
+                var here = prefix.Length == 0 ? i.ToString(System.Globalization.CultureInfo.InvariantCulture) : $"{prefix}.{i}";
+                var s = list[i];
+                if (s.Id == stepId) return here;
+                var inner = (s.Then is null ? null : Find(s.Then, $"{here}.t"))
+                    ?? (s.Paths is null ? null : s.Paths.Select((p, n) => p.Steps is null ? null : Find(p.Steps, $"{here}.p{n}")).FirstOrDefault(x => x is not null))
+                    ?? (s.Else is null ? null : Find(s.Else, $"{here}.e"))
+                    ?? (s.Do is null ? null : Find(s.Do, $"{here}.d"))
+                    ?? (s.ErrorPath is null ? null : Find(s.ErrorPath, $"{here}.x"));
+                if (inner is not null) return inner;
+            }
+            return null;
+        }
+        return Find(def.Steps, "");
     }
 
     /// <summary>Into a branch's side (<c>then</c> / <c>else</c>), or past it when that side has no steps.</summary>
@@ -87,6 +125,7 @@ public static class Positions
         "t" => step.Then ?? [],
         "e" => step.Else ?? [],
         "d" => step.Do ?? [],
+        "x" => step.ErrorPath ?? [],
         _ when side.Length > 1 && side[0] == 'p'
                && int.TryParse(side.AsSpan(1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var p)
                && step.Paths is { } paths && p < paths.Count => paths[p].Steps ?? [],

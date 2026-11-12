@@ -15,6 +15,7 @@ db/003_flow_versions.sql  versions: a copy of each save, to look at and restore
 db/004_oauth_connectors.sql Slack, Microsoft 365 and Google: OAuth connections, waiting consents, poll cursors
 db/005_workspace_invites.sql workspaces: their colour and logo, and invitations (tokens kept hashed)
 db/006_ai_insights.sql    the AI builder's monthly count, time-saved figures, daily run totals, Insights' indexes
+db/010_reliability.sql    error handling: auto-pause per flow, the daily failure digest (on for new workspaces)
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -237,5 +238,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/011_team.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

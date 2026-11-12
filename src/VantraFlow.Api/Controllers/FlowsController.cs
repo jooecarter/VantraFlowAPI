@@ -326,6 +326,9 @@ public sealed class FlowsController(
         // Just this step: a one-step flow over the data the earlier steps' tests left. A step inside a Repeat for each
         // runs for the list's first item; a Repeat for each runs its steps for the first few items.
         var single = new FlowDefinition { Trigger = def.Trigger, Steps = [Clone(step)], Options = def.Options };
+        // The step itself: its error path (and going on past a failure) aren't part of testing it.
+        single.Steps[0].ErrorPath = null;
+        single.Steps[0].OnError = null;
         var state = new RunState
         {
             Id = runId, WorkspaceId = workspaceId, FlowId = id, Definition = single, Data = (JsonObject)data.DeepClone(),
