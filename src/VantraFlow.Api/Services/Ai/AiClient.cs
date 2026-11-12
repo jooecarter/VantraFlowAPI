@@ -11,8 +11,9 @@ namespace VantraFlow.Api.Services.Ai;
 /// <c>OpenAI:ApiKey</c> and <c>OpenAI:Model</c>, here with Structured Outputs (a strict JSON schema) and a timeout. Off
 /// — "Not set up yet" — until both settings exist. Only the planner's instructions (the catalog, the workspace's apps,
 /// tables and projects, never a secret or a connection's key) and the person's request are sent; neither is logged.
+/// AI steps call it too (<see cref="CompleteAsync"/>): the step's own inputs only, retried on a 5xx, a 429 or a timeout.
 /// </summary>
-public sealed class AiClient(IHttpClientFactory http, IConfiguration config, ILogger<AiClient> log)
+public sealed class AiClient(IHttpClientFactory http, IConfiguration config, ILogger<AiClient> log) : IAiModel
 {
     public const string ClientName = "openai";
     private const string Url = "https://api.openai.com/v1/chat/completions";
@@ -80,6 +81,83 @@ public sealed class AiClient(IHttpClientFactory http, IConfiguration config, ILo
         {
             log.LogWarning("The AI draft call failed: {Kind}", e.GetType().Name);
             return null;
+        }
+    }
+
+    // ── AI steps ──
+
+    /// <summary>Tries per AI step call (a 5xx, a 429 or a timeout is tried again at once, briefly; then the engine's retries take over).</summary>
+    public const int StepAttempts = 3;
+    public static readonly TimeSpan StepAttemptTimeout = TimeSpan.FromSeconds(20);
+    /// <summary>The longest a retry waits, whatever Retry-After asks.</summary>
+    public static readonly TimeSpan MaxRetryWait = TimeSpan.FromSeconds(8);
+
+    /// <summary>How the wait before another try is made (tests skip it).</summary>
+    public Func<TimeSpan, CancellationToken, Task> Sleep { get; set; } = Task.Delay;
+
+    /// <summary>The wait before try <paramref name="attempt"/> + 1: Retry-After when given (at most 8 s), else 1 s, 2 s, 4 s….</summary>
+    public static TimeSpan RetryWait(int attempt, TimeSpan? retryAfter) =>
+        retryAfter is { } r && r > TimeSpan.Zero ? (r < MaxRetryWait ? r : MaxRetryWait)
+            : TimeSpan.FromSeconds(Math.Min(MaxRetryWait.TotalSeconds, Math.Pow(2, Math.Max(0, attempt - 1))));
+
+    /// <summary>
+    /// An AI step's call: the step's instructions and input, a strict JSON schema for the answer. Logged by status only:
+    /// never the input, the answer or the key.
+    /// </summary>
+    public async Task<AiReply> CompleteAsync(AiAsk ask, CancellationToken ct)
+    {
+        if (!Configured) return AiReply.Fail(AiStepRules.NotSetUp);
+        var body = new JsonObject
+        {
+            ["model"] = Model,
+            ["temperature"] = ask.Temperature,
+            ["messages"] = new JsonArray(
+                new JsonObject { ["role"] = "system", ["content"] = ask.System },
+                new JsonObject { ["role"] = "user", ["content"] = ask.User }),
+            ["response_format"] = new JsonObject
+            {
+                ["type"] = "json_schema",
+                ["json_schema"] = new JsonObject { ["name"] = ask.SchemaName, ["strict"] = true, ["schema"] = ask.Schema.DeepClone() },
+            },
+        };
+        for (var attempt = 1; ; attempt++)
+        {
+            int status;
+            TimeSpan? retryAfter = null;
+            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                cts.CancelAfter(StepAttemptTimeout);
+                using var req = new HttpRequestMessage(HttpMethod.Post, Url) { Content = JsonContent.Create(body) };
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Key);
+                try
+                {
+                    using var resp = await http.CreateClient(ClientName).SendAsync(req, cts.Token);
+                    status = (int)resp.StatusCode;
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var parsed = await resp.Content.ReadFromJsonAsync<JsonObject>(cts.Token);
+                        var message = parsed?["choices"]?[0]?["message"];
+                        if (message?["refusal"] is JsonValue) return AiReply.Fail("The AI declined to work on this text.");
+                        if (message?["content"] is JsonValue c && c.TryGetValue<string>(out var text) && text.Length > 0) return new AiReply(text);
+                        status = 502;
+                    }
+                    else retryAfter = resp.Headers.RetryAfter?.Delta;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { status = 408; }
+                catch (Exception e) when (e is HttpRequestException or JsonException or NotSupportedException) { status = 503; }
+            }
+            var retryable = status is 408 or 429 || status >= 500;
+            log.LogWarning("An AI step's call answered {Status} (try {Attempt})", status, attempt);
+            if (!retryable)
+                return AiReply.Fail(status is 401 or 403 ? "The server's AI key was refused. An admin can check the AI settings." : $"The AI couldn't take this request (HTTP {status}).");
+            if (attempt >= StepAttempts)
+                return AiReply.Fail(status switch
+                {
+                    429 => "The AI is busy right now.",
+                    408 => $"The AI didn't answer within {StepAttemptTimeout.TotalSeconds:0} seconds.",
+                    _ => "The AI is unavailable right now.",
+                }, retryable: true);
+            await Sleep(RetryWait(attempt, retryAfter), ct);
         }
     }
 

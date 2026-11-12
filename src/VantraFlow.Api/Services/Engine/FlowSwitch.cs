@@ -14,7 +14,7 @@ public sealed record SwitchOutcome(FlowRow? Flow, IReadOnlyList<DefinitionError>
 /// </summary>
 public sealed class FlowSwitch(
     FlowsRepository flows, WorkspacesRepository workspaces, Connections connections, FlowSchema schema, OAuthRepository oauth,
-    OAuth.OAuthProviders providers, OAuth.OAuthActions oauthActions, Billing.Plans plans, IConfiguration config)
+    OAuth.OAuthProviders providers, OAuth.OAuthActions oauthActions, Billing.Plans plans, IConfiguration config, Ai.AiClient ai)
 {
     public async Task<SwitchOutcome> SetAsync(FlowRow f, bool enabled, string by, CancellationToken ct)
     {
@@ -35,6 +35,12 @@ public sealed class FlowSwitch(
                         errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
             if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
                 errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
+            // AI steps: the server's AI settings, and db/006 (the plan's AI credits are counted there).
+            if (Ai.AiStepRules.Uses(def))
+            {
+                if (!ai.Configured) errors.Add(new DefinitionError(null, Ai.AiStepRules.NotSetUp));
+                else if (!await schema.InsightsReadyAsync()) errors.Add(new DefinitionError(null, Ai.AiStepRules.NotReady));
+            }
             if (errors.Count > 0) return new SwitchOutcome(null, Errors: errors);
             // The plan: its active-flow limit, and premium apps and steps.
             if (await workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)

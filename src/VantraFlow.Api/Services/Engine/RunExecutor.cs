@@ -347,7 +347,9 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         }
         var htmlKeys = step.App == "email" ? new HashSet<string> { "body" } : null;
         var input = Tokens.RenderNode(step.Config, s.Data, htmlKeys) as JsonObject ?? new JsonObject();
-        var seconds = ErrorRules.TimeoutOf(step, limits);
+        // An AI step writes its answer as it goes, so unless its "On error" sets its own timeout it gets longer than an app's call.
+        var seconds = step.TimeoutSeconds is null && Ai.AiStepRules.IsAi(step)
+            ? Math.Max(limits.StepTimeoutSeconds, Ai.AiStepRules.TimeoutSeconds) : ErrorRules.TimeoutOf(step, limits);
         var clock = Stopwatch.StartNew();
         StepOutcome outcome;
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))

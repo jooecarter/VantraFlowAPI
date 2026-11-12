@@ -83,6 +83,10 @@ builder.Services.AddScoped<VantraFlow.Api.Services.Insights.IRunLimits, VantraFl
 // The AI flow builder: OpenAI:ApiKey and OpenAI:Model (off until both exist), a monthly cap per workspace (Ai:MonthlyCap).
 builder.Services.AddScoped<AiRepository>();
 builder.Services.AddSingleton<VantraFlow.Api.Services.Ai.AiClient>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Ai.IAiModel>(sp => sp.GetRequiredService<VantraFlow.Api.Services.Ai.AiClient>());
+builder.Services.AddScoped<VantraFlow.Api.Services.Ai.IAiCredits, VantraFlow.Api.Services.Ai.AiCredits>();
+builder.Services.AddScoped(sp => new VantraFlow.Api.Services.Ai.AiSteps(
+    sp.GetRequiredService<VantraFlow.Api.Services.Ai.IAiModel>(), sp.GetRequiredService<VantraFlow.Api.Services.Ai.IAiCredits>()));
 builder.Services.AddHttpClient(VantraFlow.Api.Services.Ai.AiClient.ClientName, c => c.Timeout = TimeSpan.FromSeconds(60))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
