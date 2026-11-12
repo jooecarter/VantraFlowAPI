@@ -53,13 +53,19 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
     /// Send one HTML email via the server default — Microsoft Graph (the shared
     /// mailbox) when configured, else the server-wide SMTP. Returns whether it sent.
     /// </summary>
-    public async Task<bool> SendAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
+    public async Task<bool> SendAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody) =>
+        (await SendWithReasonAsync(fromEmail, fromName, toEmail, toName, subject, htmlBody)).Ok;
+
+    /// <summary><see cref="SendAsync"/>, with why it didn't send (for a run's step): Microsoft's answer in plain words.</summary>
+    public async Task<EmailSendResult> SendWithReasonAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
     {
         if (Graph.IsUsable)
             return await TrySendGraphAsync(fromEmail, fromName, toEmail, toName, subject, htmlBody);
         if (Global.IsUsable)
-            return await TrySendAsync(Global, fromEmail, fromName, toEmail, toName, subject, htmlBody);
-        return false;
+            return await TrySendAsync(Global, fromEmail, fromName, toEmail, toName, subject, htmlBody)
+                ? EmailSendResult.Sent
+                : new EmailSendResult(false, "Vantra Flow's mail server didn't accept it.", true);
+        return new EmailSendResult(false, "Email isn't set up on this server yet.");
     }
 
     /// <summary>
@@ -107,15 +113,16 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
     /// author, so replies reach them directly). Uses app-only client-credentials
     /// auth — no user is signed in. Returns whether Graph accepted it.
     /// </summary>
-    public async Task<bool> TrySendGraphAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
+    public async Task<EmailSendResult> TrySendGraphAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
     {
         var g = Graph;
-        if (!g.IsUsable || string.IsNullOrWhiteSpace(toEmail)) return false;
+        if (!g.IsUsable) return new EmailSendResult(false, "Email isn't set up on this server yet.");
+        if (string.IsNullOrWhiteSpace(toEmail)) return new EmailSendResult(false, "There's no address to send to.");
 
         try
         {
-            var token = await GetGraphTokenAsync(g);
-            if (token is null) return false;
+            var (token, failed) = await GetGraphTokenAsync(g);
+            if (token is null) return failed ?? GraphMailErrors.Token(0, null);
 
             var senderName = string.IsNullOrWhiteSpace(fromName) ? g.Sender : fromName;
             var payload = new GraphSendMail(
@@ -137,28 +144,32 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
             req.Content = JsonContent.Create(payload, options: GraphJson);
 
             using var resp = await http.SendAsync(req);
-            if (resp.IsSuccessStatusCode) return true; // sendMail returns 202 Accepted
+            if (resp.IsSuccessStatusCode) return EmailSendResult.Sent; // sendMail returns 202 Accepted
 
             var body = await resp.Content.ReadAsStringAsync();
             logger.LogWarning("Graph sendMail to {To} failed: {Status} {Body}", toEmail, (int)resp.StatusCode, body);
-            return false;
+            // A refused token (a secret changed or revoked since it was issued): sign in afresh next time.
+            if (resp.StatusCode == HttpStatusCode.Unauthorized) _token = null;
+            return GraphMailErrors.Send((int)resp.StatusCode, body, g.Sender);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Graph send to {To} failed", toEmail);
-            return false;
+            return new EmailSendResult(false, ex is TaskCanceledException or HttpRequestException
+                ? "Microsoft 365 couldn't be reached just now. Trying again shortly."
+                : "Vantra Flow's mailbox couldn't send it.", true);
         }
     }
 
     /// <summary>Get an app-only Graph token, cached until ~2 minutes before it expires.</summary>
-    private async Task<string?> GetGraphTokenAsync(GraphMailSettings g)
+    private async Task<(string? Token, EmailSendResult? Failed)> GetGraphTokenAsync(GraphMailSettings g)
     {
-        if (_token is not null && DateTimeOffset.UtcNow < _tokenExpiresAt) return _token;
+        if (_token is not null && DateTimeOffset.UtcNow < _tokenExpiresAt) return (_token, null);
 
         await _tokenLock.WaitAsync();
         try
         {
-            if (_token is not null && DateTimeOffset.UtcNow < _tokenExpiresAt) return _token;
+            if (_token is not null && DateTimeOffset.UtcNow < _tokenExpiresAt) return (_token, null);
 
             var http = httpFactory.CreateClient();
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -172,19 +183,21 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
                 $"https://login.microsoftonline.com/{Uri.EscapeDataString(g.TenantId)}/oauth2/v2.0/token", form);
             if (!resp.IsSuccessStatusCode)
             {
-                logger.LogWarning("Graph token request failed: {Status}", (int)resp.StatusCode);
-                return null;
+                // The AADSTS code says which setting is wrong; the description isn't logged (it carries trace ids).
+                var failed = GraphMailErrors.Token((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
+                logger.LogWarning("Graph token request failed: {Status} {Reason}", (int)resp.StatusCode, failed.Reason);
+                return (null, failed);
             }
 
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
             var root = doc.RootElement;
             var token = root.TryGetProperty("access_token", out var t) ? t.GetString() : null;
             var expiresIn = root.TryGetProperty("expires_in", out var e) && e.TryGetInt32(out var ei) ? ei : 3600;
-            if (string.IsNullOrEmpty(token)) return null;
+            if (string.IsNullOrEmpty(token)) return (null, null);
 
             _token = token;
             _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expiresIn - 120));
-            return _token;
+            return (_token, null);
         }
         finally
         {
