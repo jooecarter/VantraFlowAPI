@@ -308,6 +308,7 @@ public static partial class DefinitionRules
                     if (action is null) { errors.Add(new(s.Id, "Choose what this step does.")); break; }
                     foreach (var key in action.Required)
                         if (Empty(s.Config[key])) errors.Add(new(s.Id, $"Fill in {action.Label(key)}."));
+                    if (s.App == Ai.AiStepRules.App) errors.AddRange(Ai.AiStepRules.Check(s.Action, s.Config).Select(m => new DefinitionError(s.Id, m)));
                     if (s.Retry is { } r && (r.Max < 0 || r.Max > FlowLimits.MaxRetries || r.BackoffSeconds < 5 || r.BackoffSeconds > 3600))
                         errors.Add(new(s.Id, $"Retries: up to {FlowLimits.MaxRetries}, waiting 5 seconds to an hour."));
                     break;

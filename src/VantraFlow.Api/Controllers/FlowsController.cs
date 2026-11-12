@@ -33,7 +33,7 @@ public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
     OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
-    StepsRepository steps)
+    StepsRepository steps, Services.Ai.AiClient ai)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -196,6 +196,12 @@ public sealed class FlowsController(
                         errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
             if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
                 errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
+            // AI steps: the server's AI settings, and db/006 (the plan's AI credits are counted there).
+            if (Services.Ai.AiStepRules.Uses(def))
+            {
+                if (!ai.Configured) errors.Add(new DefinitionError(null, Services.Ai.AiStepRules.NotSetUp));
+                else if (!await schema.InsightsReadyAsync()) errors.Add(new DefinitionError(null, Services.Ai.AiStepRules.NotReady));
+            }
             if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
             // The plan: its active-flow limit, and premium apps and steps.
             if (await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)

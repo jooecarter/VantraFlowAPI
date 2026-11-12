@@ -3,7 +3,10 @@ using VantraFlow.Api.Services.Insights;
 
 namespace VantraFlow.Api.Data;
 
-/// <summary>The AI flow builder's monthly count per workspace: <c>flow.Usage.AiDrafts</c> on the month's row (db/006).</summary>
+/// <summary>
+/// A workspace's AI credits used this month: <c>flow.Usage.AiDrafts</c> on the month's row (db/006). One pool for the plan's AI credits:
+/// the AI flow builder's drafts and AI steps (<see cref="Services.Ai.AiCredits"/>) both count here.
+/// </summary>
 public sealed class AiRepository(SqlConnectionFactory factory)
 {
     public async Task<int> UsedAsync(Guid workspaceId, DateTime nowUtc)

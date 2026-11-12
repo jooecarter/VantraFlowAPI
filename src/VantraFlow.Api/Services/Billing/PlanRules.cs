@@ -87,6 +87,7 @@ public static class PlanRules
         ["flow"] = "Sub-flows",
         [StepTypes.Paths] = "Paths",
         ["approval"] = "Approvals",
+        ["ai"] = "AI steps",
     };
 
     public static string Label(string key) => Labels.TryGetValue(key, out var l) ? l : char.ToUpperInvariant(key[0]) + key[1..];

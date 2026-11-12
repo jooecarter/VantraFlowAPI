@@ -16,7 +16,7 @@ namespace VantraFlow.Api.Services.Connectors;
 /// connect time; no redirects). Never logs a key, a secret or a request's headers.
 /// </summary>
 public sealed partial class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
-    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema)
+    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema, Ai.AiSteps ai)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -40,6 +40,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
                 "http" => await HttpAsync(call, ct),
                 "flow" => await RunFlowAsync(call),
                 "slack" or "microsoft" or "google" or "stripe" or "hubspot" or "xero" => await oauth.RunAsync(call, ct),
+                Ai.AiStepRules.App => await ai.RunAsync(call, ct),
                 _ => StepOutcome.Fail("This step isn't something Vantra Flow can do."),
             };
         }

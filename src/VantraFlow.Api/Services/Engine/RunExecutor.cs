@@ -311,16 +311,18 @@ public sealed class RunExecutor(IStepActions actions, FlowLimits limits, Func<Da
         var input = Tokens.RenderNode(step.Config, s.Data, htmlKeys) as JsonObject ?? new JsonObject();
         var clock = Stopwatch.StartNew();
         StepOutcome outcome;
+        // An AI step writes its answer as it goes, so it gets longer than an app's call.
+        var seconds = Ai.AiStepRules.IsAi(step) ? Math.Max(limits.StepTimeoutSeconds, Ai.AiStepRules.TimeoutSeconds) : limits.StepTimeoutSeconds;
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
-            timeout.CancelAfter(TimeSpan.FromSeconds(limits.StepTimeoutSeconds));
+            timeout.CancelAfter(TimeSpan.FromSeconds(seconds));
             try
             {
                 outcome = await actions.RunAsync(new StepCall(s.WorkspaceId, s.Id, s.FlowId, step, input, s.Test, SubFlowRules.DepthOf(s.Data), Tokens.Text(s.Data["workspace"]?["timeZone"]) is { Length: > 0 } tz ? tz : null), timeout.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                outcome = StepOutcome.Fail($"No answer within {limits.StepTimeoutSeconds} seconds.", retryable: true);
+                outcome = StepOutcome.Fail($"No answer within {seconds} seconds.", retryable: true);
             }
         }
         var ms = (int)Math.Min(int.MaxValue, clock.ElapsedMilliseconds);

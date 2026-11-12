@@ -77,9 +77,13 @@ equals, not_equals, contains, not_contains, starts_with, ends_with, is_empty, is
 The Orbit trigger "Record matches a condition" takes the same condition in its config.
 
 CONFIG is a list of { key, value, json }: value is text (tokens allowed); when the value is an object or a list (fields, values,
-headers, input, condition, assignments, rows, days, fieldIds) json is true and value holds it as JSON text, e.g.
+headers, input, condition, assignments, rows, days, fieldIds, categories) json is true and value holds it as JSON text, e.g.
 { "key": "fields", "value": "{\"Name\": \"{{trigger.body.name}}\"}", "json": true }. Orbit record fields are written by field name.
 Schedule times are HH:mm in the workspace's time zone; weekly days are ["mon","tue",…].
+AI steps (app "ai") read text from tokens (an email's {{trigger.subject}} and {{trigger.preview}}, a webhook's {{trigger.body.message}}) and
+hand on what they found: route a Classify step's {{steps.<id>.category}} with "paths" (one path per category, condition category equals its name, then
+otherwise); write an Extract step's {{steps.<id>.fields.<name>}} into a later step. Use them only when the request needs reading or writing
+text; an extract step's fields is JSON like [{"name": "Order number", "type": "text", "description": ""}].
 """);
         sb.Append("THE WORKSPACE. Time zone: ").Append(ctx.TimeZone).Append(". Today: ").Append(now.ToString("yyyy-MM-dd")).AppendLine(".");
         sb.Append("Connected apps: ").AppendLine(ctx.Connected.Count == 0 ? "none yet (drafting with any app is fine: the person connects it next)." : string.Join(", ", ctx.Connected) + ".");

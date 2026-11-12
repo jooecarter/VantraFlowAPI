@@ -161,6 +161,33 @@ public static class FlowCatalog
         {
             Description = "Looks up a Xero contact by email or name: config { search }. Output: { found, id, name, email, link, contacts }.", Premium = true,
         },
+        // AI steps (Services/Ai/AiStepRules): each uses one of the plan's AI credits a run.
+        E("ai", "summarize", "Summarise text", ("text", "the text to summarise")) with
+        {
+            Description = "Summarises text with AI: config { text, length: short | medium | bullets, focus }. Output: { summary, bullets (a list) }.", Premium = true,
+        },
+        E("ai", "classify", "Classify text", ("text", "the text to classify"), ("categories", "the categories")) with
+        {
+            Description = "Puts text in one of your categories with AI: config { text, categories: [{ name, description }] } (2 to 20). " +
+                "Output: { category, confidence (0 to 1), reasoning }. Follow it with Paths on {{steps.<id>.category}}.",
+            Premium = true,
+        },
+        E("ai", "extract", "Extract data", ("text", "the text to read"), ("fields", "at least one field")) with
+        {
+            Description = "Pulls named fields out of text with AI: config { text, fields: [{ name, type: text | number | date | email | boolean | list, description }] }. " +
+                "Output: { fields: { <name>: value or null }, found, missing, reasoning }; read one as {{steps.<id>.fields.<name>}}.",
+            Premium = true,
+        },
+        E("ai", "write", "Write text", ("instruction", "what to write")) with
+        {
+            Description = "Drafts text with AI from an instruction and tokens: config { instruction, context (the text to work from), tone: friendly | professional | formal | casual | concise, " +
+                "format: text | email }. Output: { text, subject (for email) }.",
+            Premium = true,
+        },
+        E("ai", "translate", "Translate text", ("text", "the text to translate"), ("language", "a language")) with
+        {
+            Description = "Translates text with AI: config { text, language (e.g. French) }. Output: { text, detected (the original language), language }.", Premium = true,
+        },
     ];
 
     /// <summary>The steps that aren't an app's action, with the config each takes (the AI builder reads these).</summary>

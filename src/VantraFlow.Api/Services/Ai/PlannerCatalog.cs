@@ -69,12 +69,19 @@ public static class PlannerCatalog
         ["xero/invoice.create"] = H(["description", "quantity: a number (default 1)", "accountCode: e.g. 200", "dueDate: yyyy-MM-dd (default in 30 days)",
             "reference", "status: DRAFT | AUTHORISED (default DRAFT)"], "id", "number", "total", "status", "link"),
         ["xero/contact.find"] = H([], "found", "id", "name", "email", "link", "contacts (a list)"),
+        // AI steps: each run uses one of the plan's AI credits; feed them the text with a token.
+        ["ai/summarize"] = H(["length: short | medium | bullets (default short)", "focus: what to pay most attention to"], "summary", "bullets (a list)"),
+        ["ai/classify"] = H([], "category", "confidence (0 to 1)", "reasoning"),
+        ["ai/extract"] = H([], "fields.<name> (each field by its name)", "found", "missing (a list)", "reasoning"),
+        ["ai/write"] = H(["context: the text to work from, e.g. the email to reply to", "tone: friendly | professional | formal | casual | concise (default friendly)",
+            "format: text | email (email also writes a subject)"], "text", "subject"),
+        ["ai/translate"] = H([], "text", "detected"),
     };
 
     /// <summary>A few config keys whose value is a JSON object or list rather than text.</summary>
     public static readonly IReadOnlySet<string> ObjectKeys = new HashSet<string>(StringComparer.Ordinal)
     {
-        "fields", "values", "headers", "input", "condition", "assignments", "rows", "fieldIds", "days", "query", "form", "auth", "properties", "approvers",
+        "fields", "values", "headers", "input", "condition", "assignments", "rows", "fieldIds", "days", "query", "form", "auth", "properties", "approvers", "categories",
     };
 
     /// <summary>The catalog, the step types and the token rules, as the planner's instructions describe them.</summary>
@@ -100,6 +107,8 @@ public static class PlannerCatalog
             var hint = Hints.GetValueOrDefault($"{a.App}/{a.Key}");
             sb.Append("- ").Append(a.App).Append(" / ").Append(a.Key).Append(" — ").Append(a.Title).Append('.');
             AppendKeys(sb, a, hint);
+            // An AI step's config holds lists of objects (categories, fields): its description says their shape.
+            if (a.App == AiStepRules.App && a.Description is { } d) sb.Append(' ').Append(d);
             if (hint is { Outputs.Length: > 0 }) sb.Append(" Hands on: ").Append(string.Join(", ", hint.Outputs.Select(o => "{{steps.<id>." + o.Split(' ')[0] + "}}")));
             sb.AppendLine();
         }
