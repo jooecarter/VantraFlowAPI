@@ -22,7 +22,7 @@ namespace VantraFlow.Api.Controllers;
 public sealed class WorkspacesController(
     IWorkspaceStore workspaces, IConfiguration config, IWorkspaceAlerts alerts, IWorkspaceFeatures features, IWorkspaceTeardown teardown,
     ILogger<WorkspacesController> log, SharedWorkspaces? shared = null, SharedMembers? sharedMembers = null, SharedSync? sync = null,
-    SharedTeam? team = null, FlowSpaces? spaces = null)
+    SharedTeam? team = null, FlowSpaces? spaces = null, Services.Billing.Plans? plans = null)
     : FlowControllerBase(workspaces)
 {
     private const string App = SharedApps.Flow;
@@ -306,6 +306,9 @@ public sealed class WorkspacesController(
         if (!WorkspaceRules.CanDelete(role)) return Refuse(WorkspaceCodes.OwnerOnly, "Only an owner can delete the workspace.");
         if (!WorkspaceRules.ConfirmMatches(w.Name, body?.Confirm))
             return Refuse(WorkspaceCodes.ConfirmMismatch, $"Type the workspace's name, {w.Name}, to delete it.");
+        // A paid plan would go on billing with nothing to bill for: it's cancelled first, in the billing portal.
+        if (plans is not null && (await plans.ForAsync(w, DateTime.UtcNow)).Plan.Source == Services.Billing.PlanSources.Subscription)
+            return StatusCode(409, new { error = "Cancel the workspace's plan in billing first, then delete it.", code = "has_subscription" });
         await Workspaces.PauseAllAsync(workspaceId, "The workspace is being deleted.");
         var report = await teardown.DisconnectAllAsync(workspaceId, ct);
         await Workspaces.DeleteAllAsync(workspaceId);
@@ -344,9 +347,12 @@ public sealed class WorkspacesController(
                 }
             }
             var (runs, emails) = await Workspaces.UsageAsync(w.Id, DateTime.UtcNow);
+            // The month's runs are the plan's (db/008); before, the server's quota as ever.
+            var quota = plans is null ? w.MonthlyRunQuota ?? limits.MonthlyRuns
+                : Services.Billing.PlanRules.RunQuota(w, (await plans.ForAsync(w, DateTime.UtcNow)).Plan);
             bool? alertDefault = alertsReady ? await alerts.WorkspaceDefaultAsync(w.Id) : null;
             var look = looks.GetValueOrDefault(w.Id);
-            list.Add(new WorkspaceDto(w.Id, w.Name, w.TimeZone, role, w.MonthlyRunQuota ?? limits.MonthlyRuns, runs, emails, limits.EmailsPerDay, alertDefault,
+            list.Add(new WorkspaceDto(w.Id, w.Name, w.TimeZone, role, quota, runs, emails, limits.EmailsPerDay, alertDefault,
                 lookReady ? look?.Color ?? WorkspaceRules.DefaultColor : null, look?.Logo, counts.GetValueOrDefault(w.Id, 1), Iso(w.CreatedAt),
                 string.Equals(w.OwnerVantraId, Sub, StringComparison.OrdinalIgnoreCase),
                 links is null ? null : SharedWorkspaces.Ref(links, w.Id)));

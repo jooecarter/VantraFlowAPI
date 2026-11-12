@@ -16,6 +16,13 @@ public interface IEngineStore
     Task<int> RunsSinceAsync(Guid workspaceId, string? flowId, DateTime since);
     Task<bool> PauseAsync(Guid workspaceId, string flowId, string reason);
     Task InsertRunAsync(RunRow run);
+
+    /// <summary>
+    /// A run about to start: null when it may (counted against the month), else why it's skipped. The plan's say
+    /// (<see cref="Billing.Plans.AdmitRunAsync"/>) in the SQL store; here, the month's quota alone.
+    /// </summary>
+    async Task<string?> AdmitAsync(WorkspaceRow ws, FlowDefinition def, DateTime now, int quota) =>
+        await CountRunAsync(ws.Id, now, quota) ? null : $"This workspace has used its {quota:N0} runs for the month.";
 }
 
 /// <summary>Done, or put back until a time (the workspace's per-minute rate).</summary>
@@ -23,7 +30,7 @@ public sealed record EventOutcome(bool Done, DateTime? DeferUntil = null, int St
 
 /// <summary>
 /// One event in, its runs out: each flow it starts (<see cref="TriggerMatcher"/>) gets a run, once (the
-/// <c>e:{event}</c> claim), within the workspace's monthly quota and per-minute rate, with the loop breaker
+/// <c>e:{event}</c> claim), within the workspace's plan (its monthly runs, its premium steps) and per-minute rate, with the loop breaker
 /// watching each flow (more than <see cref="FlowLimits.FlowRunsPerMinute"/> runs in a minute pauses it). A run
 /// starts from a snapshot of the flow's definition, so editing a flow never changes a run under way.
 /// </summary>
@@ -60,10 +67,8 @@ public sealed class EventProcessor(IEngineStore store, FlowLimits limits, Func<D
                 await store.PauseAsync(ws.Id, flow.Id, LoopReason(limits.FlowRunsPerMinute));
                 continue;
             }
-            var quota = ws.MonthlyRunQuota ?? limits.MonthlyRuns;
-            var allowed = await store.CountRunAsync(ws.Id, t, quota);
-            await store.InsertRunAsync(NewRun(flow, def, ws, data, t, ev.Id, ev.ReplayOf, test: false,
-                allowed ? null : $"This workspace has used its {quota:N0} runs for the month."));
+            var skipped = await store.AdmitAsync(ws, def, t, ws.MonthlyRunQuota ?? limits.MonthlyRuns);
+            await store.InsertRunAsync(NewRun(flow, def, ws, data, t, ev.Id, ev.ReplayOf, test: false, skipped));
             started++;
         }
         return new EventOutcome(true, null, started);
@@ -81,8 +86,14 @@ public sealed class EventProcessor(IEngineStore store, FlowLimits limits, Func<D
 }
 
 /// <summary>The SQL side of <see cref="IEngineStore"/>.</summary>
-public sealed class SqlEngineStore(FlowsRepository flows, WorkspacesRepository workspaces, EngineRepository engine) : IEngineStore
+public sealed class SqlEngineStore(FlowsRepository flows, WorkspacesRepository workspaces, EngineRepository engine, Billing.Plans plans) : IEngineStore
 {
+    /// <summary>The workspace's plan decides: its run quota, and whether the flow's premium steps may run.</summary>
+    public async Task<string?> AdmitAsync(WorkspaceRow ws, FlowDefinition def, DateTime now, int quota) =>
+        await plans.AdmitRunAsync(ws, def, now) is { } refused
+            ? refused.Code == Billing.PlanCodes.Premium ? $"Skipped: {refused.Message}" : refused.Message
+            : null;
+
     public async Task<IReadOnlyList<FlowRow>> CandidatesAsync(FlowEventRow ev)
     {
         if (ev.FlowId is not null)
