@@ -3,7 +3,7 @@ using Dapper;
 namespace VantraFlow.Api.Data;
 
 /// <summary>
-/// Has db/001 run (and db/005, <see cref="InvitesReadyAsync"/>; db/002, <see cref="AlertsReadyAsync"/>; db/003, <see cref="VersionsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
+/// Has db/001 run (and db/007, <see cref="StepsReadyAsync"/>; db/005, <see cref="InvitesReadyAsync"/>; db/002, <see cref="AlertsReadyAsync"/>; db/003, <see cref="VersionsReadyAsync"/>)? Until it has, every endpoint but sign-in answers 503 <c>not_ready</c> and the worker waits —
 /// so the API can be deployed before the migration. The probe looks for the index db/001 makes last
 /// (<c>IX_Runs_Due</c>), by name in <c>sys.indexes</c> (never a constraint's definition). A positive answer is
 /// remembered for the life of the process, a negative one for <see cref="NegativeTtl"/>.
@@ -55,6 +55,28 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RunSteps_Fa
         insightsReady = await conn.ExecuteScalarAsync<bool>(InsightsProbeSql);
         insightsCheckedAt = DateTime.UtcNow;
         return insightsReady;
+    }
+
+    /// <summary>db/007 (secrets, approvals, webhook samples, Stripe, HubSpot and Xero): the index it makes last, by name.</summary>
+    public const string StepsProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Approvals_Inbox' AND object_id = OBJECT_ID(N'flow.Approvals'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool stepsReady;
+    private DateTime stepsCheckedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Has db/007 run? Until it has, secrets, approvals, webhook samples and the Stripe, HubSpot and Xero connections
+    /// hide themselves (503 <c>not_ready</c>), and an Approval step fails with why.
+    /// </summary>
+    public async Task<bool> StepsReadyAsync()
+    {
+        if (stepsReady) return true;
+        if (DateTime.UtcNow - stepsCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        stepsReady = await conn.ExecuteScalarAsync<bool>(StepsProbeSql);
+        stepsCheckedAt = DateTime.UtcNow;
+        return stepsReady;
     }
 
     /// <summary>db/008 (plans and billing): the index it makes last, by name.</summary>

@@ -15,8 +15,8 @@ namespace VantraFlow.Api.Services.Connectors;
 /// and HTTP requests through the guarded client (<see cref="NetworkGuard"/>: public addresses only, checked at
 /// connect time; no redirects). Never logs a key, a secret or a request's headers.
 /// </summary>
-public sealed class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
-    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth)
+public sealed partial class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
+    FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -37,9 +37,9 @@ public sealed class StepActions(Connections connections, EmailService email, Eng
                 "orbit" or "projects" => StepOutcome.Done(await connections.CallAsync(call.WorkspaceId, step.App,
                     (api, key) => api.ActAsync(key, step.Action ?? "", call.Input, $"flow:{call.RunId}:{step.Id}", ct))),
                 "email" => await EmailAsync(call, ct),
-                "http" => await HttpAsync(call.Input, ct),
+                "http" => await HttpAsync(call, ct),
                 "flow" => await RunFlowAsync(call),
-                "slack" or "microsoft" or "google" => await oauth.RunAsync(call, ct),
+                "slack" or "microsoft" or "google" or "stripe" or "hubspot" or "xero" => await oauth.RunAsync(call, ct),
                 _ => StepOutcome.Fail("This step isn't something Vantra Flow can do."),
             };
         }
@@ -142,61 +142,191 @@ public sealed class StepActions(Connections connections, EmailService email, Eng
         return null;
     }
 
-    private async Task<StepOutcome> HttpAsync(JsonObject input, CancellationToken ct)
+    /// <summary>The most redirects followed, each one's address checked again (public addresses only).</summary>
+    public const int MaxRedirects = 3;
+    public const int MaxResponseHeaders = 30;
+    private static readonly HashSet<string> HiddenResponseHeaders = new(StringComparer.OrdinalIgnoreCase) { "Set-Cookie", "Set-Cookie2" };
+
+    /// <summary>
+    /// The HTTP request step: <c>{ method, url, query, headers, bodyType: json | form | raw, body, form, auth, errors }</c>.
+    /// <c>query</c> and <c>form</c> are name → value maps (tokens filled in); <c>auth</c> is <c>{ type: none | bearer | basic |
+    /// header, secretId, username, header }</c>, the secret read from the workspace's sealed secrets (db/007) and sent over
+    /// https only. Redirects are followed (at most <see cref="MaxRedirects"/>), each new address checked as the first was, and
+    /// credentials dropped when one leaves the first host. Its output: <c>{ status, ok, url, headers, contentType, body,
+    /// truncated }</c>, the body parsed when it's JSON and cut at <see cref="MaxResponseBytes"/>. A 4xx or 5xx fails the
+    /// step (a 5xx, 408 or 429 worth retrying) unless <c>errors: continue</c>, when the step hands on the response as it is.
+    /// </summary>
+    private async Task<StepOutcome> HttpAsync(StepCall call, CancellationToken ct)
     {
+        var input = call.Input;
         var method = (Tokens.Text(input["method"]) is { Length: > 0 } m ? m : "POST").ToUpperInvariant();
         if (!Methods.Contains(method)) return StepOutcome.Fail("Choose GET, POST, PUT, PATCH or DELETE.");
-        if (CheckUrl(Tokens.Text(input["url"]), out var uri) is { } bad) return StepOutcome.Fail(bad);
-        using var req = new HttpRequestMessage(new HttpMethod(method), uri);
-        var body = Tokens.Text(input["body"]);
-        if (method != "GET" && body.Length > 0)
+        if (CheckUrl(Tokens.Text(input["url"]), out var first) is { } bad) return StepOutcome.Fail(bad);
+        var uri = WithQuery(first!, input["query"] as JsonObject);
+
+        // The body, made again for each try (a redirect that keeps the method sends it again).
+        var bodyType = Tokens.Text(input["bodyType"]);
+        Func<HttpContent?> content = () => null;
+        if (method != "GET")
         {
-            var json = IsJson(body);
-            req.Content = new StringContent(body, Encoding.UTF8, json ? "application/json" : "text/plain");
+            switch (bodyType)
+            {
+                case "form":
+                    var pairs = (input["form"] as JsonObject ?? []).Where(kv => kv.Key.Trim().Length > 0)
+                        .Select(kv => new KeyValuePair<string, string>(kv.Key.Trim(), Tokens.Text(kv.Value))).ToList();
+                    if (pairs.Count > 0) content = () => new FormUrlEncodedContent(pairs);
+                    break;
+                case "json":
+                    var json = Tokens.Text(input["body"]);
+                    if (json.Trim().Length > 0 && !IsJson(json)) return StepOutcome.Fail("The body isn't valid JSON.");
+                    if (json.Trim().Length > 0) content = () => new StringContent(json, Encoding.UTF8, "application/json");
+                    break;
+                default:
+                    var text = Tokens.Text(input["body"]);
+                    if (text.Length > 0)
+                    {
+                        var type = bodyType == "raw" ? "text/plain" : IsJson(text) ? "application/json" : "text/plain";
+                        content = () => new StringContent(text, Encoding.UTF8, type);
+                    }
+                    break;
+            }
         }
-        if (input["headers"] is JsonObject headers)
-            foreach (var (name, value) in headers)
+
+        // Credentials: a saved secret, never written in the step itself.
+        (string Name, string Value)? auth = null;
+        var authCfg = input["auth"] as JsonObject;
+        var authType = Tokens.Text(authCfg?["type"]);
+        if (authType is "bearer" or "basic" or "header")
+        {
+            if (uri.Scheme != "https") return StepOutcome.Fail("Secrets are only sent over https://.");
+            var (secret, why) = await SecretAsync(call.WorkspaceId, Tokens.Text(authCfg?["secretId"]).Trim());
+            if (secret is null) return StepOutcome.Fail(why!);
+            switch (authType)
+            {
+                case "bearer": auth = ("Authorization", "Bearer " + secret); break;
+                case "basic":
+                    var user = Tokens.Text(authCfg?["username"]);
+                    if (user.Contains(':')) return StepOutcome.Fail("The username can't contain a colon.");
+                    auth = ("Authorization", "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{secret}")));
+                    break;
+                default:
+                    var name = Tokens.Text(authCfg?["header"]).Trim();
+                    if (!HeaderName().IsMatch(name) || BlockedHeaders.Contains(name)) return StepOutcome.Fail("Name the header the key goes in, like X-Api-Key.");
+                    auth = (name, secret);
+                    break;
+            }
+        }
+
+        var headers = new List<(string Name, string Value)>();
+        string? contentType = null;
+        if (input["headers"] is JsonObject hs)
+            foreach (var (name, value) in hs)
             {
                 if (string.IsNullOrWhiteSpace(name) || BlockedHeaders.Contains(name)) continue;
-                var v = Tokens.Text(value);
-                if (name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (req.Content is not null && MediaTypeHeaderValue.TryParse(v, out var ctype)) req.Content.Headers.ContentType = ctype;
-                    continue;
-                }
-                req.Headers.TryAddWithoutValidation(name.Trim(), v);
+                if (name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) { contentType = Tokens.Text(value); continue; }
+                headers.Add((name.Trim(), Tokens.Text(value)));
             }
-        req.Headers.UserAgent.ParseAdd("VantraFlow/1.0");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(HttpTimeout);
-        HttpResponseMessage res;
-        try { res = await http.CreateClient(HttpClientName).SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token); }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return StepOutcome.Fail($"No answer within {HttpTimeout.TotalSeconds:0} seconds.", retryable: true); }
-        catch (HttpRequestException e) when (Innermost(e) is WebhookBlockedException blocked) { return StepOutcome.Fail(blocked.Message); }
-        catch (HttpRequestException) { return StepOutcome.Fail($"Couldn't reach {uri!.Host}.", retryable: true); }
-        using (res)
+        var client = http.CreateClient(HttpClientName);
+        var origin = uri;
+        var sendBody = true;
+        for (var hop = 0; ; hop++)
         {
-            var text = await ReadCappedAsync(res, timeout.Token);
-            JsonNode? parsed = null;
-            if (text.Length > 0 && IsJson(text)) parsed = JsonNode.Parse(text);
-            var output = new JsonObject
+            using var req = new HttpRequestMessage(new HttpMethod(method), uri);
+            if (sendBody && content() is { } c)
             {
-                ["status"] = (int)res.StatusCode,
-                ["contentType"] = res.Content.Headers.ContentType?.MediaType,
-                ["body"] = parsed ?? JsonValue.Create(text),
-            };
-            var code = (int)res.StatusCode;
-            if (code is >= 200 and < 300) return StepOutcome.Done(output);
-            if (code is >= 300 and < 400) return StepOutcome.Fail($"HTTP {code}: redirects aren't followed.");
-            return StepOutcome.Fail($"HTTP {code}", retryable: code >= 500 || code is 408 or 425 or 429);
+                if (contentType is not null && MediaTypeHeaderValue.TryParse(contentType, out var ctype)) c.Headers.ContentType = ctype;
+                req.Content = c;
+            }
+            var sameOrigin = uri.Scheme == origin.Scheme && string.Equals(uri.Host, origin.Host, StringComparison.OrdinalIgnoreCase) && uri.Port == origin.Port;
+            foreach (var (name, value) in headers)
+                if (sameOrigin || !name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)) req.Headers.TryAddWithoutValidation(name, value);
+            if (auth is { } a && sameOrigin) req.Headers.TryAddWithoutValidation(a.Name, a.Value);
+            req.Headers.UserAgent.ParseAdd("VantraFlow/1.0");
+
+            HttpResponseMessage res;
+            try { res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return StepOutcome.Fail($"No answer within {HttpTimeout.TotalSeconds:0} seconds.", retryable: true); }
+            catch (HttpRequestException e) when (Innermost(e) is WebhookBlockedException blocked) { return StepOutcome.Fail(blocked.Message); }
+            catch (HttpRequestException) { return StepOutcome.Fail($"Couldn't reach {uri.Host}.", retryable: true); }
+            using (res)
+            {
+                var code = (int)res.StatusCode;
+                if (code is 301 or 302 or 303 or 307 or 308 && res.Headers.Location is { } location)
+                {
+                    if (hop >= MaxRedirects) return StepOutcome.Fail($"HTTP {code}: more than {MaxRedirects} redirects.");
+                    var next = location.IsAbsoluteUri ? location : new Uri(uri, location);
+                    if (CheckUrl(next.ToString(), out var checkedNext) is { } why) return StepOutcome.Fail($"It redirected somewhere Vantra Flow won't go: {why}");
+                    // 303, and a 301 / 302 after a POST, carry on as a GET without the body (as browsers do).
+                    if (code == 303 || (code is 301 or 302 && method == "POST")) { method = "GET"; sendBody = false; }
+                    uri = checkedNext!;
+                    continue;
+                }
+                var (text, truncated) = await ReadCappedAsync(res, timeout.Token);
+                JsonNode? parsed = null;
+                if (text.Length > 0 && !truncated && IsJson(text)) parsed = JsonNode.Parse(text);
+                var outHeaders = new JsonObject();
+                foreach (var h in res.Headers.Concat(res.Content.Headers))
+                {
+                    if (outHeaders.Count >= MaxResponseHeaders || HiddenResponseHeaders.Contains(h.Key)) continue;
+                    var v = string.Join(", ", h.Value);
+                    outHeaders[h.Key.ToLowerInvariant()] = v.Length > 500 ? v[..500] : v;
+                }
+                var output = new JsonObject
+                {
+                    ["status"] = code,
+                    ["ok"] = code is >= 200 and < 300,
+                    ["url"] = uri.ToString(),
+                    ["headers"] = outHeaders,
+                    ["contentType"] = res.Content.Headers.ContentType?.MediaType,
+                    ["body"] = parsed ?? JsonValue.Create(text),
+                };
+                if (truncated) output["truncated"] = true;
+                if (code is >= 200 and < 300 || Tokens.Text(input["errors"]) == "continue") return StepOutcome.Done(output);
+                var snippet = text.Trim().Length > 0 ? $": {OneLine(text, 200)}" : "";
+                return StepOutcome.Fail($"HTTP {code}{snippet}", retryable: code >= 500 || code is 408 or 425 or 429);
+            }
         }
     }
 
-    private static async Task<string> ReadCappedAsync(HttpResponseMessage res, CancellationToken ct)
+    /// <summary>The URL with the step's query parameters added (after any it has).</summary>
+    public static Uri WithQuery(Uri uri, JsonObject? query)
+    {
+        var pairs = (query ?? []).Where(kv => kv.Key.Trim().Length > 0)
+            .Select(kv => $"{Uri.EscapeDataString(kv.Key.Trim())}={Uri.EscapeDataString(Tokens.Text(kv.Value))}").ToList();
+        if (pairs.Count == 0) return uri;
+        var b = new UriBuilder(uri);
+        var existing = b.Query.TrimStart('?');
+        b.Query = (existing.Length > 0 ? existing + "&" : "") + string.Join("&", pairs);
+        return b.Uri;
+    }
+
+    private async Task<(string? Value, string? Error)> SecretAsync(Guid workspaceId, string id)
+    {
+        if (id.Length == 0) return (null, "Choose the secret to send.");
+        if (!await schema.StepsReadyAsync()) return (null, "Secrets arrive with the next server update.");
+        if (await steps.SecretAsync(workspaceId, id) is not { } row) return (null, "That secret was deleted. Choose another.");
+        if (secrets.Unprotect(row.Cipher, workspaceId, row.Id) is not { } value) return (null, "That secret can't be opened. Save it again in Settings.");
+        await steps.TouchSecretAsync(workspaceId, row.Id, DateTime.UtcNow);
+        return (value, null);
+    }
+
+    private static string OneLine(string s, int max)
+    {
+        var t = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+        return t.Length <= max ? t : t[..max] + "…";
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")]
+    private static partial System.Text.RegularExpressions.Regex HeaderName();
+
+    /// <summary>The body as text, at most <see cref="MaxResponseBytes"/>; whether there was more.</summary>
+    private static async Task<(string Text, bool Truncated)> ReadCappedAsync(HttpResponseMessage res, CancellationToken ct)
     {
         await using var stream = await res.Content.ReadAsStreamAsync(ct);
-        var buffer = new byte[MaxResponseBytes];
+        var buffer = new byte[MaxResponseBytes + 1];
         var read = 0;
         while (read < buffer.Length)
         {
@@ -204,7 +334,8 @@ public sealed class StepActions(Connections connections, EmailService email, Eng
             if (n == 0) break;
             read += n;
         }
-        return Encoding.UTF8.GetString(buffer, 0, read);
+        var truncated = read > MaxResponseBytes;
+        return (Encoding.UTF8.GetString(buffer, 0, Math.Min(read, MaxResponseBytes)), truncated);
     }
 
     private static bool IsJson(string s)

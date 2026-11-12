@@ -19,6 +19,7 @@ namespace VantraFlow.Api.Controllers;
 /// DELETE api/w/{ws}/flows/{id}
 /// POST   api/w/{ws}/flows/{id}/hook-secret        { signed } → { secret } once (a webhook trigger's HMAC secret)
 /// POST   api/w/{ws}/flows/{id}/sample             { definition } → { trigger, real } — data to test with
+/// GET    api/w/{ws}/flows/{id}/hook-sample        → a webhook trigger's newest payload (db/007; 404 no_sample until one arrives)
 /// POST   api/w/{ws}/flows/{id}/test               { definition, trigger? } → the test run, every step for real
 /// POST   api/w/{ws}/flows/{id}/test-step          { definition, stepId, data } → that step's log line
 /// PUT    api/w/{ws}/flows/{id}/alerts             { on: true | false | null } → the flow's failure alert (db/002; 503 before)
@@ -31,7 +32,8 @@ namespace VantraFlow.Api.Controllers;
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
-    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans)
+    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
+    StepsRepository steps)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -192,6 +194,8 @@ public sealed class FlowsController(
                 foreach (var p in outside)
                     if (await oauth.LiveAsync(workspaceId, p) is null)
                         errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
+            if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
+                errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
             if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
             // The plan: its active-flow limit, and premium apps and steps.
             if (await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)
@@ -241,8 +245,30 @@ public sealed class FlowsController(
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (Definition(body.Definition) is not { } def) return BadRequest(new { error = "That flow couldn't be read." });
-        var real = await connections.SampleAsync(workspaceId, def.Trigger, ct);
+        var real = def.Trigger.App == "webhook" ? await HookSampleAsync(workspaceId, id) : await connections.SampleAsync(workspaceId, def.Trigger, ct);
         return Ok(new { trigger = real ?? FlowCatalog.Sample(def.Trigger, DateTime.UtcNow), real = real is not null });
+    }
+
+    /// <summary>
+    /// A webhook trigger's newest payload (db/007), also one sent while the flow is off: <c>{ trigger, receivedAt }</c>, or
+    /// 404 <c>no_sample</c> until one arrives. The builder asks again while it listens.
+    /// </summary>
+    [HttpGet("api/w/{workspaceId:guid}/flows/{id}/hook-sample")]
+    public async Task<IActionResult> HookSample(Guid workspaceId, string id)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!await schema.StepsReadyAsync()) return StatusCode(503, new { error = "Webhook samples arrive with the next server update.", code = "not_ready" });
+        if (await steps.HookSampleAsync(workspaceId, id) is not { } row) return NotFound(new { error = "Nothing has arrived yet.", code = "no_sample" });
+        JsonNode? trigger;
+        try { trigger = JsonNode.Parse(row.Payload); } catch (JsonException) { trigger = null; }
+        return Ok(new { trigger, receivedAt = Iso(row.ReceivedAt) });
+    }
+
+    private async Task<JsonObject?> HookSampleAsync(Guid workspaceId, string flowId)
+    {
+        if (!await schema.StepsReadyAsync() || await steps.HookSampleAsync(workspaceId, flowId) is not { } row) return null;
+        try { return JsonNode.Parse(row.Payload) as JsonObject; } catch (JsonException) { return null; }
     }
 
     [HttpPost("api/w/{workspaceId:guid}/flows/{id}/test")]
@@ -256,7 +282,9 @@ public sealed class FlowsController(
         if (errors.Count > 0) return UnprocessableEntity(new { error = "Fix these to test the flow.", errors });
         var ws = (await Workspaces.GetAsync(workspaceId))!;
         var now = DateTime.UtcNow;
-        var trigger = body.Trigger as JsonObject ?? await connections.SampleAsync(workspaceId, def.Trigger, ct) ?? FlowCatalog.Sample(def.Trigger, now);
+        var trigger = body.Trigger as JsonObject
+            ?? (def.Trigger.App == "webhook" ? await HookSampleAsync(workspaceId, id) : await connections.SampleAsync(workspaceId, def.Trigger, ct))
+            ?? FlowCatalog.Sample(def.Trigger, now);
         var run = EventProcessor.NewRun(f, def, ws, trigger, now, null, null, test: true);
         await engine.InsertRunAsync(run);
         var state = FlowWorker.State(run)!;

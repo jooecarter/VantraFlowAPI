@@ -50,7 +50,7 @@ public sealed class PlannerTests
             else if (n is JsonArray a) foreach (var x in a) Check(x);
         }
         Check(schema);
-        Assert.Equal(["action", "filter", "branch", "paths", "loop", "delay", "formatter", "variable"],
+        Assert.Equal(["action", "filter", "branch", "paths", "loop", "delay", "formatter", "variable", "wait", "approval"],
             schema["$defs"]!["step"]!["properties"]!["type"]!["enum"]!.AsArray().Select(x => x!.GetValue<string>()));
     }
 
@@ -147,6 +147,27 @@ public sealed class PlannerTests
         Assert.Contains(d.Notes, n => n.Contains("Repeat for each"));
         Assert.NotNull(d.Definition.Steps[1].Paths![0].Condition);
         Assert.Empty(DefinitionRules.Validate(d.Definition, Limits));
+    }
+
+    [Fact]
+    public void An_approval_gets_its_three_paths_and_no_made_up_approvers()
+    {
+        const string answer = """
+        { "name": "n", "description": "", "explanation": "",
+          "trigger": { "app": "webhook", "event": "catch", "config": [] },
+          "steps": [ { "id": "s1", "type": "approval", "app": "", "action": "", "name": "Approve the refund",
+            "config": [ { "key": "title", "value": "Refund {{trigger.body.amount}}?", "json": false }, { "key": "approvers", "value": "[\"u_made_up\"]", "json": true } ],
+            "then": [], "else": [], "do": [],
+            "paths": [ { "name": "Rejected", "condition": "", "steps": [ { "id": "s2", "type": "action", "app": "email", "action": "send", "name": "Say no",
+                "config": [ { "key": "to", "value": "{{trigger.body.email}}", "json": false }, { "key": "subject", "value": "Sorry", "json": false } ], "then": [], "else": [], "do": [], "paths": [] } ] } ] } ] }
+        """;
+        var d = FlowPlanner.Read(answer, Limits)!;
+        var a = d.Definition.Steps.Single();
+        Assert.Equal(["Approved", "Rejected", "Timed out"], a.Paths!.Select(p => p.Name));
+        Assert.Equal("s2", a.Paths[1].Steps.Single().Id);
+        Assert.Empty(a.Config["approvers"]!.AsArray());
+        // What's left is choosing who approves.
+        Assert.All(DefinitionRules.Validate(d.Definition, Limits), e => Assert.Equal("s1", e.StepId));
     }
 
     [Fact]

@@ -60,7 +60,12 @@ STEP TYPES besides "action" (app and action are "" for these):
 - "paths": "paths" is a list of { name, condition, steps }, tried top to bottom (at most 5).
 - "loop" ("Repeat for each"): config.items is a token for a list (e.g. {{steps.s1.records}}); config.max (1–100); "do" holds the
   steps repeated, which read {{loop.item.…}}. Loops don't nest.
-- "delay": config.amount (a number) and config.unit (minutes | hours | days), at most 30 days.
+- "delay": config.amount (a number) and config.unit (minutes | hours | days), at most 30 days; or config.mode "until" with
+  config.at (a date and time, or a token) to wait until then.
+- "wait" ("Wait until"): config.condition, checked every config.every minutes (default 15) for at most config.amount config.unit
+  (default 3 days); config.onTimeout continue | stop. Its output: {{steps.<id>.met}}.
+- "approval": config.title, config.details; config.approvers is left empty (the person picks workspace members). "paths" holds
+  exactly three paths, named Approved, Rejected and Timed out, with condition "" and the steps for each. Not inside a loop.
 - "formatter": config.kind (text | number | date | lookup), config.op, config.input (a token); its result is {{steps.<id>.output}}.
   text: trim, case (case: upper|lower|title|sentence), replace (find, with), split (separator), extract (what: email|url|number).
   number: format (decimals, prefix, suffix), round (decimals), math (operator: add|subtract|multiply|divide, value).
@@ -145,7 +150,8 @@ Schedule times are HH:mm in the workspace's time zone; weekly days are ["mon","t
     }
 
     private static readonly string[] StepKinds =
-        [StepTypes.Action, StepTypes.Filter, StepTypes.Branch, StepTypes.Paths, StepTypes.Loop, StepTypes.Delay, StepTypes.Formatter, StepTypes.Variable];
+        [StepTypes.Action, StepTypes.Filter, StepTypes.Branch, StepTypes.Paths, StepTypes.Loop, StepTypes.Delay, StepTypes.Formatter, StepTypes.Variable,
+         StepTypes.Wait, StepTypes.Approval];
 
     // ── Reading the answer ──
 
@@ -196,8 +202,26 @@ Schedule times are HH:mm in the workspace's time zone; weekly days are ["mon","t
                     step.App = app;
                     step.Action = action;
                     break;
-                case StepTypes.Filter or StepTypes.Delay or StepTypes.Formatter or StepTypes.Variable:
+                case StepTypes.Filter or StepTypes.Delay or StepTypes.Formatter or StepTypes.Variable or StepTypes.Wait:
                     break;
+                case StepTypes.Approval:
+                    if (inLoop || depth >= limits.MaxDepth) { notes.Add("An Approval inside a Repeat for each (or nested too deep) was left out."); continue; }
+                    budget--;
+                    step.Config.Remove("approvers");
+                    step.Config["approvers"] = new JsonArray();
+                    // Its three fixed paths, in order, whatever the answer named them.
+                    var given = (o["paths"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+                    var named = given.Any(p => ApprovalRules.PathNames.Contains(Text(p["name"]).Trim(), StringComparer.OrdinalIgnoreCase));
+                    step.Paths = [];
+                    for (var i = 0; i < ApprovalRules.PathNames.Length; i++)
+                    {
+                        var pathName = ApprovalRules.PathNames[i];
+                        var match = given.FirstOrDefault(p => string.Equals(Text(p["name"]).Trim(), pathName, StringComparison.OrdinalIgnoreCase))
+                            ?? (named ? null : given.ElementAtOrDefault(i));
+                        step.Paths.Add(new PathDef { Name = pathName, Steps = match is null ? [] : Steps(match["steps"], depth + 1, inLoop, notes, ref budget, limits) });
+                    }
+                    list.Add(step);
+                    continue;
                 case StepTypes.Branch:
                     if (depth >= limits.MaxDepth) { notes.Add("Branches nested too deep were left out."); continue; }
                     budget--;

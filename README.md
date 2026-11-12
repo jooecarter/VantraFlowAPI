@@ -225,5 +225,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/008_plans.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

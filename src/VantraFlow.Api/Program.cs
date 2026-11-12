@@ -107,6 +107,9 @@ builder.Services.AddSingleton<AppConnectors>();
 builder.Services.AddScoped<Connections>();
 builder.Services.AddSingleton<EmailService>();
 builder.Services.AddScoped<IStepActions, StepActions>();
+// New steps (db/007): workspace secrets, approvals (asked by email, decided in the inbox or by link) and webhook samples.
+builder.Services.AddScoped<StepsRepository>();
+builder.Services.AddScoped<IApprovalGate, ApprovalGate>();
 builder.Services.AddScoped<SqlEngineStore>();
 builder.Services.AddSingleton<FlowSignal>();
 builder.Services.AddHostedService<FlowWorker>();
@@ -115,6 +118,9 @@ builder.Services.AddScoped<OAuthRepository>();
 builder.Services.AddSingleton<SlackProvider>();
 builder.Services.AddSingleton<MicrosoftProvider>();
 builder.Services.AddSingleton<GoogleProvider>();
+builder.Services.AddSingleton<StripeProvider>();
+builder.Services.AddSingleton<HubSpotProvider>();
+builder.Services.AddSingleton<XeroProvider>();
 builder.Services.AddSingleton<OAuthProviders>();
 builder.Services.AddScoped<OAuthConnections>();
 builder.Services.AddScoped<OAuthActions>();
@@ -167,6 +173,10 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(AiController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 6, Window = TimeSpan.FromMinutes(1) }));
+    // Approval email links: 30 a minute per address.
+    o.AddPolicy(ApprovalLinksController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
     // Webhook triggers and app events: 300 a minute per address and path.
     o.AddPolicy(IncomingController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") + ctx.Request.Path,

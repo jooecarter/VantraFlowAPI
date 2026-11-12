@@ -17,7 +17,8 @@ namespace VantraFlow.Api.Controllers;
 /// POST api/w/{ws}/runs/{id}/cancel                      → a queued or waiting run stops
 /// </code>
 /// </summary>
-public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, Services.Billing.Plans plans)
+public sealed class RunsController(WorkspacesRepository workspaces, EngineRepository engine, FlowsRepository flows, FlowSignal signal, Services.Billing.Plans plans,
+    FlowSchema schema, StepsRepository steps)
     : FlowControllerBase(workspaces)
 {
     [HttpGet("api/w/{workspaceId:guid}/runs")]
@@ -68,8 +69,10 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     {
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
-        return await engine.CancelRunAsync(workspaceId, id, DateTime.UtcNow) ? NoContent()
-            : Conflict(new { error = "Only a queued or waiting run can be cancelled." });
+        if (!await engine.CancelRunAsync(workspaceId, id, DateTime.UtcNow)) return Conflict(new { error = "Only a queued or waiting run can be cancelled." });
+        // An approval it was waiting on stops waiting too (its links then say the run was cancelled).
+        if (await schema.StepsReadyAsync()) await steps.CancelApprovalsAsync(id, DateTime.UtcNow);
+        return NoContent();
     }
 
     public static async Task<RunDetailDto?> DetailAsync(EngineRepository engine, Guid workspaceId, string id)
@@ -84,7 +87,18 @@ public sealed class RunsController(WorkspacesRepository workspaces, EngineReposi
     public static RunSummaryDto Summary(RunRow r) =>
         new(r.Id, r.FlowId, r.FlowName, r.Status, r.Test, r.ReplayOf, Iso(r.StartedAt), Iso(r.FinishedAt), r.DurationMs, r.Error, r.StepCount,
             r.Status is RunStatuses.Waiting or RunStatuses.Queued && r.NotBefore > DateTime.UtcNow ? Iso(r.NotBefore) : null,
-            r.Test ? null : r.FlowVersion); // a test runs the builder's unsaved copy
+            r.Test ? null : r.FlowVersion, // a test runs the builder's unsaved copy
+            WaitingFor(r));
+
+    /// <summary>What a waiting run waits on: the step it's at (an approval, a wait until, a delay), or a retry of an action.</summary>
+    public static string? WaitingFor(RunRow r)
+    {
+        if (r.Status != RunStatuses.Waiting && !(r.Status == RunStatuses.Queued && r.Attempt > 0)) return null;
+        if (r.Attempt > 0 && r.Status == RunStatuses.Queued) return "retry";
+        return FlowDefinition.Parse(r.Definition) is { } def && Positions.StepAt(def, r.Position) is { } step
+            ? step.Type is StepTypes.Approval or StepTypes.Wait or StepTypes.Delay ? step.Type : null
+            : null;
+    }
 
     private static JsonNode? Parse(string? json)
     {
