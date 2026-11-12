@@ -13,7 +13,8 @@ namespace VantraFlow.Api.Services.Connectors;
 /// workspace's daily cap. Never logs a link.
 /// </summary>
 public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, WorkspacesRepository workspaces, FlowsRepository flows, EmailService email,
-    EngineRepository engine, FlowLimits limits, FlowSecrets secrets, IConfiguration config, ILogger<ApprovalGate> log) : IApprovalGate
+    EngineRepository engine, FlowLimits limits, FlowSecrets secrets, IConfiguration config, ILogger<ApprovalGate> log, Developer.IDevEvents? events = null)
+    : IApprovalGate
 {
     public string AppBase => (config["App:BaseUrl"] is { Length: > 0 } u ? u : "https://vantraflow-web.azurewebsites.net").TrimEnd('/');
 
@@ -29,6 +30,8 @@ public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, Worksp
             Clip(ask.Title.Length > 0 ? ask.Title : "Approval needed", 200), ask.Details is null ? null : Clip(ask.Details, 4000), list.ToJsonString(), "pending",
             null, null, null, null, null, DateTime.UtcNow, ask.ExpiresAt);
         var saved = await repo.InsertApprovalAsync(row);
+        // Asked for the first time (not a run picked up again): outgoing webhooks hear of it (db/012).
+        if (saved.Id == row.Id && events is not null) await events.ApprovalRequestedAsync(saved);
         var notified = 0;
         if (saved.Id == row.Id && email.CanSend())
         {

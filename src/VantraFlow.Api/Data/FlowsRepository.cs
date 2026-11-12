@@ -3,8 +3,11 @@ using VantraFlow.Api.Models;
 
 namespace VantraFlow.Api.Data;
 
-/// <summary>Flows: the studio's list and editor, and what the engine looks up to start runs.</summary>
-public sealed class FlowsRepository(SqlConnectionFactory factory)
+/// <summary>
+/// Flows: the studio's list and editor, and what the engine looks up to start runs. Switching one on or off (or a pause)
+/// tells outgoing webhooks (db/012, <see cref="Services.Developer.IDevEvents"/>) when it changed anything.
+/// </summary>
+public sealed class FlowsRepository(SqlConnectionFactory factory, Services.Developer.IDevEvents? events = null)
 {
     private const string FlowCols =
         "Id, WorkspaceId, Name, Description, Enabled, Definition, Version, TriggerApp, TriggerEvent, TriggerScope, HookId, HookSecretCipher, " +
@@ -76,18 +79,22 @@ WHERE WorkspaceId = @WorkspaceId AND Id = @Id;",
     public async Task SetEnabledAsync(Guid workspaceId, string id, bool enabled, string by)
     {
         using var conn = factory.Flow();
-        await conn.ExecuteAsync(@"
+        var was = await conn.ExecuteScalarAsync<bool?>(@"
 UPDATE flow.Flows SET Enabled = @Enabled, PausedReason = NULL, UpdatedBy = @By, UpdatedAt = SYSUTCDATETIME()
+OUTPUT DELETED.Enabled
 WHERE WorkspaceId = @WorkspaceId AND Id = @Id;", new { WorkspaceId = workspaceId, Id = id, Enabled = enabled, By = by });
+        if (was is { } before && before != enabled && events is not null) await events.FlowSwitchedAsync(workspaceId, id, enabled);
     }
 
     /// <summary>The loop breaker or a lost connection switched it off; true when it was on.</summary>
     public async Task<bool> PauseAsync(Guid workspaceId, string id, string reason)
     {
         using var conn = factory.Flow();
-        return await conn.ExecuteAsync(@"
+        var paused = await conn.ExecuteAsync(@"
 UPDATE flow.Flows SET Enabled = 0, PausedReason = @Reason WHERE WorkspaceId = @WorkspaceId AND Id = @Id AND Enabled = 1;",
             new { WorkspaceId = workspaceId, Id = id, Reason = reason.Length > 200 ? reason[..200] : reason }) > 0;
+        if (paused && events is not null) await events.FlowSwitchedAsync(workspaceId, id, false);
+        return paused;
     }
 
     public async Task DeleteAsync(Guid workspaceId, string id)

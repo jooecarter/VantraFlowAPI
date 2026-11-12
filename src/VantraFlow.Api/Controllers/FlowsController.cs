@@ -32,8 +32,8 @@ namespace VantraFlow.Api.Controllers;
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
-    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
-    StepsRepository steps)
+    Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
+    StepsRepository steps, FlowSwitch flowSwitch)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -180,39 +180,12 @@ public sealed class FlowsController(
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
-        var def = FlowDefinition.Parse(f.Definition) ?? new FlowDefinition();
-        if (body.Enabled)
-        {
-            var errors = DefinitionRules.Validate(def, Limits).ToList();
-            foreach (var app in FlowCatalog.AppsNeeded(def))
-                if (await connections.OpenAsync(workspaceId, app) is null)
-                    errors.Add(new DefinitionError(null, $"Connect {(app == "orbit" ? "Vantra Orbit" : "Vantra Projects")} first."));
-            var outside = FlowCatalog.ProvidersNeeded(def);
-            if (outside.Count > 0 && !await schema.ConnectorsReadyAsync())
-                errors.Add(new DefinitionError(null, "Slack, Microsoft 365 and Google arrive with the next server update."));
-            else
-                foreach (var p in outside)
-                    if (await oauth.LiveAsync(workspaceId, p) is null)
-                        errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
-            if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
-                errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
-            if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
-            // The plan: its active-flow limit, and premium apps and steps.
-            if (await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)
-                return PlanRefused(block);
-        }
-        await flows.SetEnabledAsync(workspaceId, id, body.Enabled, Sub);
-        if (body.Enabled) await JoinSlackAsync(workspaceId, def, ct);
-        try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
-        catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
-        {
-            if (body.Enabled)
-            {
-                await flows.SetEnabledAsync(workspaceId, id, false, Sub);
-                return StatusCode(502, new { error = e.Message, code = "subscribe_failed" });
-            }
-        }
-        return Ok(await DtoAsync((await flows.GetAsync(workspaceId, id))!));
+        // The checks before it goes on (its definition, its apps, the plan) and the apps' webhooks: FlowSwitch, shared with the API.
+        var outcome = await flowSwitch.SetAsync(f, body.Enabled, Sub, ct);
+        if (outcome.Errors is { } errors) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
+        if (outcome.Plan is { } block) return PlanRefused(block);
+        if (outcome.SubscribeFailed is { } why) return StatusCode(502, new { error = why, code = "subscribe_failed" });
+        return Ok(await DtoAsync(outcome.Flow!));
     }
 
     [HttpDelete("api/w/{workspaceId:guid}/flows/{id}")]
