@@ -41,6 +41,10 @@ SET CONCAT_NULL_YIELDS_NULL ON;
 SET ARITHABORT ON;
 SET NUMERIC_ROUNDABORT OFF;
 
+-- Needs db/004 (the connectors tables): stop before changing anything if it hasn't run.
+IF OBJECT_ID(N'flow.OAuthConnections', N'U') IS NULL OR OBJECT_ID(N'flow.Events', N'U') IS NULL
+    THROW 51007, N'Run db/004_oauth_connectors.sql on this database first, then run this again. Nothing was changed.', 1;
+
 IF OBJECT_ID(N'flow.Secrets', N'U') IS NULL
     EXEC(N'CREATE TABLE flow.Secrets
     (
