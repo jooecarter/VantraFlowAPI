@@ -81,7 +81,7 @@ public sealed class WorkspaceMail(EmailService email, IConfiguration config, ILo
         return (subject, Frame($"You're in {E(workspaceName)}", body, "Open Vantra Flow", link, "You can leave a workspace from its settings.", showLink: false));
     }
 
-    private static string Frame(string heading, string body, string button, string link, string foot, bool showLink)
+    internal static string Frame(string heading, string body, string button, string link, string foot, bool showLink)
     {
         var url = E(link);
         var plain = showLink

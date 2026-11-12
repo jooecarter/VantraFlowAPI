@@ -96,6 +96,39 @@ builder.Services.AddSingleton<VantraFlow.Api.Services.Billing.StripeBilling>();
 builder.Services.AddScoped<PlansRepository>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Billing.Plans>();
 
+// The developer API (/api/v1) and outgoing webhooks (db/012): keys checked by DevKeyFilter (120 requests a minute per
+// key), webhooks queued by DevEvents and sent by the worker through the guarded client below.
+builder.Services.AddScoped<DeveloperRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.IDevEvents, VantraFlow.Api.Services.Developer.DevEvents>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Developer.WebhookSender>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.WebhookDispatcher>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Developer.DevEndpoints>();
+builder.Services.AddSingleton(new VantraFlow.Api.Services.Developer.DevRateLimiter());
+builder.Services.AddScoped<IDevKeyStore, SqlDevKeyStore>();
+builder.Services.AddScoped<DevKeyFilter>();
+builder.Services.AddScoped<FlowSwitch>();
+// Webhook deliveries: every connection through NetworkGuard (public addresses only, checked at connect time), no
+// proxy, no redirects, no cookies.
+builder.Services.AddHttpClient(VantraFlow.Api.Services.Developer.WebhookSender.ClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        UseCookies = false,
+        AutomaticDecompression = DecompressionMethods.None,
+        ConnectTimeout = TimeSpan.FromSeconds(5),
+        ConnectCallback = NetworkGuard.ConnectAsync,
+    });
+
+// Team and organisation (db/011): folders, tags, owners, comments with @mention emails, the activity log, and moving
+// flows between workspaces (duplicate, export, import).
+builder.Services.AddScoped<TeamRepository>();
+builder.Services.AddScoped<ITeamStore>(sp => sp.GetRequiredService<TeamRepository>());
+builder.Services.AddScoped<IFlowStore>(sp => sp.GetRequiredService<FlowsRepository>());
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IActivityLog, VantraFlow.Api.Services.Team.ActivityLog>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IMentionMail, VantraFlow.Api.Services.Team.MentionMail>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Team.IFirstVersion, VantraFlow.Api.Services.Team.FirstVersion>();
+
 // ── Identity ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<JwtTokenService>();
 // Two-step sign-in: Orbit's and Projects', asked server to server (Services/Auth/TwoFactorSignIn.cs).
@@ -182,6 +215,10 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(AiController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 6, Window = TimeSpan.FromMinutes(1) }));
+    // Comments: 20 a minute per person.
+    o.AddPolicy(CommentsController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
     // Approval email links: 30 a minute per address.
     o.AddPolicy(ApprovalLinksController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -203,6 +240,15 @@ builder.Services
     {
         options.MapInboundClaims = false; // keep raw claim names (sub, email, ...)
         options.TokenValidationParameters = FlowTokenValidation.Session(builder.Configuration);
+        // A developer API key (Bearer vfk_…) isn't a session: /api/v1 checks it (DevKeyFilter), and it's never read or logged here.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = ctx =>
+            {
+                if (ctx.Request.Headers.Authorization.ToString().TrimStart().StartsWith("Bearer vfk_", StringComparison.OrdinalIgnoreCase)) ctx.NoResult();
+                return Task.CompletedTask;
+            },
+        };
     });
 builder.Services.AddAuthorization();
 

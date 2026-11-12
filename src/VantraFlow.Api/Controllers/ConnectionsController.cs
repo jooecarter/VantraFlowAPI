@@ -93,6 +93,7 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
             connections.Seal(result.Key, workspaceId, id), "active", null, Sub, DisplayName, DateTime.UtcNow, null);
         await repo.InsertAsync(row);
         log.LogInformation("Workspace {Workspace} connected to {App} workspace {Remote}", workspaceId, app, result.WorkspaceId);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.ConnectionAdded, detail: $"{AppName(app)}: {result.WorkspaceName}");
         return Ok(Dto(row, api));
     }
 
@@ -103,6 +104,7 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         if (refusal is not null) return refusal;
         if (await repo.LiveAsync(workspaceId, app) is not { } row) return NoContent();
         await connections.DisconnectAsync(row, ct);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.ConnectionRemoved, detail: $"{AppName(app)}: {row.RemoteWorkspaceName}");
         return NoContent();
     }
 
@@ -117,6 +119,8 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         catch (AppRevokedException e) { return StatusCode(409, new { error = e.Message, code = "connection_revoked" }); }
         catch (AppRefusedException e) { return StatusCode(e.Code == "not_connected" ? 409 : 400, new { error = e.Message, code = e.Code }); }
     }
+
+    private static string AppName(string app) => app == "orbit" ? "Vantra Orbit" : "Vantra Projects";
 
     private static ConnectionDto Dto(ConnectionRow c, AppApi api) =>
         new(c.Id.ToString("N"), c.App, c.RemoteWorkspaceId, c.RemoteWorkspaceName, c.Status, c.LastError, c.ConnectedByName,

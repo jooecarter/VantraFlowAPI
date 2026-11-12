@@ -32,8 +32,8 @@ namespace VantraFlow.Api.Controllers;
 public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
-    OAuthRepository oauth, Services.OAuth.OAuthProviders providers, Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
-    StepsRepository steps, Services.Ai.AiClient ai)
+    Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
+    StepsRepository steps, FlowSwitch flowSwitch, ITeamStore team)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -73,6 +73,8 @@ public sealed class FlowsController(
         await flows.InsertAsync(row);
         var saved = (await flows.GetAsync(workspaceId, row.Id))!;
         await KeepVersionAsync(saved, null);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowCreated, saved.Id, saved.Name, saved.Version,
+            body.TemplateId is { Length: > 0 } ? "From a template" : null);
         return StatusCode(201, new { flow = await DtoAsync(saved), errors = DefinitionRules.Validate(def, Limits) });
     }
 
@@ -111,6 +113,8 @@ public sealed class FlowsController(
         await flows.UpdateAsync(updated);
         var saved = (await flows.GetAsync(workspaceId, id))!;
         await KeepVersionAsync(saved, note);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowEdited, id, saved.Name, saved.Version, note);
+        if (saved.Name != f.Name) await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowRenamed, id, saved.Name, saved.Version, $"Was “{f.Name}”");
         if (f.Enabled)
         {
             await JoinSlackAsync(workspaceId, def, ct);
@@ -119,6 +123,7 @@ public sealed class FlowsController(
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
             {
                 await flows.SetEnabledAsync(workspaceId, id, false, Sub);
+                await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowDisabled, id, saved.Name, saved.Version, "Its app couldn't be reached");
                 return StatusCode(502, new { error = $"Saved, but switched off: {e.Message}", code = "subscribe_failed" });
             }
         }
@@ -180,45 +185,14 @@ public sealed class FlowsController(
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
-        var def = FlowDefinition.Parse(f.Definition) ?? new FlowDefinition();
-        if (body.Enabled)
-        {
-            var errors = DefinitionRules.Validate(def, Limits).ToList();
-            foreach (var app in FlowCatalog.AppsNeeded(def))
-                if (await connections.OpenAsync(workspaceId, app) is null)
-                    errors.Add(new DefinitionError(null, $"Connect {(app == "orbit" ? "Vantra Orbit" : "Vantra Projects")} first."));
-            var outside = FlowCatalog.ProvidersNeeded(def);
-            if (outside.Count > 0 && !await schema.ConnectorsReadyAsync())
-                errors.Add(new DefinitionError(null, "Slack, Microsoft 365 and Google arrive with the next server update."));
-            else
-                foreach (var p in outside)
-                    if (await oauth.LiveAsync(workspaceId, p) is null)
-                        errors.Add(new DefinitionError(null, $"Connect {providers.For(p)?.Name ?? p} first."));
-            if (def.AllSteps().Any(x => x.Type == StepTypes.Approval) && !await schema.StepsReadyAsync())
-                errors.Add(new DefinitionError(null, "Approvals arrive with the next server update."));
-            // AI steps: the server's AI settings, and db/006 (the plan's AI credits are counted there).
-            if (Services.Ai.AiStepRules.Uses(def))
-            {
-                if (!ai.Configured) errors.Add(new DefinitionError(null, Services.Ai.AiStepRules.NotSetUp));
-                else if (!await schema.InsightsReadyAsync()) errors.Add(new DefinitionError(null, Services.Ai.AiStepRules.NotReady));
-            }
-            if (errors.Count > 0) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
-            // The plan: its active-flow limit, and premium apps and steps.
-            if (await Workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)
-                return PlanRefused(block);
-        }
-        await flows.SetEnabledAsync(workspaceId, id, body.Enabled, Sub);
-        if (body.Enabled) await JoinSlackAsync(workspaceId, def, ct);
-        try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
-        catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException)
-        {
-            if (body.Enabled)
-            {
-                await flows.SetEnabledAsync(workspaceId, id, false, Sub);
-                return StatusCode(502, new { error = e.Message, code = "subscribe_failed" });
-            }
-        }
-        return Ok(await DtoAsync((await flows.GetAsync(workspaceId, id))!));
+        // The checks before it goes on (its definition, its apps, the plan) and the apps' webhooks: FlowSwitch, shared with the API.
+        var outcome = await flowSwitch.SetAsync(f, body.Enabled, Sub, ct);
+        if (outcome.Errors is { } errors) return UnprocessableEntity(new { error = "This flow can't run yet.", errors });
+        if (outcome.Plan is { } block) return PlanRefused(block);
+        if (outcome.SubscribeFailed is { } why) return StatusCode(502, new { error = why, code = "subscribe_failed" });
+        if (body.Enabled != f.Enabled)
+            await LogAsync(workspaceId, body.Enabled ? Services.Team.ActivityKinds.FlowEnabled : Services.Team.ActivityKinds.FlowDisabled, id, f.Name, f.Version);
+        return Ok(await DtoAsync(outcome.Flow!));
     }
 
     [HttpDelete("api/w/{workspaceId:guid}/flows/{id}")]
@@ -229,6 +203,8 @@ public sealed class FlowsController(
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoContent();
         await flows.DeleteAsync(workspaceId, id);
         if (await schema.VersionsReadyAsync()) await versions.DeleteAsync(workspaceId, id);
+        if (await team.ReadyAsync()) await team.ForgetFlowAsync(workspaceId, id);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowDeleted, id, f.Name, f.Version);
         try { await SyncAsync(workspaceId, f.TriggerApp, f.TriggerApp, ct); }
         catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException) { /* tidied on the next change */ }
         return NoContent();
@@ -398,7 +374,7 @@ public sealed class FlowsController(
     }
 
     /// <summary>The row's trigger columns from its definition, and a webhook trigger's address made when it first needs one.</summary>
-    private static FlowRow Shape(FlowRow f, FlowDefinition def)
+    internal static FlowRow Shape(FlowRow f, FlowDefinition def)
     {
         var t = def.Trigger;
         var scope = t.App switch

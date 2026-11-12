@@ -51,6 +51,7 @@ public sealed class SecretsController(WorkspacesRepository workspaces, StepsRepo
             now, now, null);
         if (!await repo.InsertSecretAsync(row)) return Conflict(new { error = "There's already a secret with that name.", code = "name_taken" });
         log.LogInformation("Workspace {Workspace} saved secret {Secret}", workspaceId, id);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.SettingsChanged, detail: $"Added the secret {name}");
         return StatusCode(201, Dto(row));
     }
 
@@ -64,6 +65,7 @@ public sealed class SecretsController(WorkspacesRepository workspaces, StepsRepo
         if (await repo.SecretAsync(workspaceId, id) is not { } row) return NotFound(new { error = "That secret isn't there any more." });
         var now = DateTime.UtcNow;
         await repo.UpdateSecretAsync(workspaceId, id, secrets.Protect(body.Value!, workspaceId, id, FlowSecrets.MaxLargeCipherBytes), Hint(body.Value!), now);
+        await LogAsync(workspaceId, Services.Team.ActivityKinds.SettingsChanged, detail: $"Replaced the secret {row.Name}");
         return Ok(Dto(row with { Hint = Hint(body.Value!), UpdatedAt = now }));
     }
 
@@ -73,7 +75,9 @@ public sealed class SecretsController(WorkspacesRepository workspaces, StepsRepo
         var (_, refusal) = await ManageAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (await NotReadyAsync() is { } nr) return nr;
+        var gone = await repo.SecretAsync(workspaceId, id);
         await repo.DeleteSecretAsync(workspaceId, id);
+        if (gone is not null) await LogAsync(workspaceId, Services.Team.ActivityKinds.SettingsChanged, detail: $"Deleted the secret {gone.Name}");
         return NoContent();
     }
 
