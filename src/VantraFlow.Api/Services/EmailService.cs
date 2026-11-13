@@ -148,8 +148,9 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
 
             var body = await resp.Content.ReadAsStringAsync();
             logger.LogWarning("Graph sendMail to {To} failed: {Status} {Body}", toEmail, (int)resp.StatusCode, body);
-            // A refused token (a secret changed or revoked since it was issued): sign in afresh next time.
-            if (resp.StatusCode == HttpStatusCode.Unauthorized) _token = null;
+            // A refused token (a secret changed or revoked since it was issued), or one issued before a permission was
+            // granted (its roles are fixed at issue, so a newly consented Mail.Send isn't in it): sign in afresh next time.
+            if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) _token = null;
             return GraphMailErrors.Send((int)resp.StatusCode, body, g.Sender);
         }
         catch (Exception ex)
