@@ -106,7 +106,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
         {
             if (!email.CanSend()) return StepOutcome.Fail("Email isn't set up on this server yet.");
             var fromName = named is { Length: > 0 } n ? n : "Vantra Flow";
-            var html = Html(body);
+            var html = Mail.FlowEmailTemplate.Render(subject, body);
             foreach (var address in to.List)
             {
                 ct.ThrowIfCancellationRequested();
