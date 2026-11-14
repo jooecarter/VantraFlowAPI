@@ -110,10 +110,20 @@ bash scripts/sqlcheck.sh
   optional HMAC secret. With a secret, callers send `X-Flow-Signature: sha256=hex(HMAC(secret, "{X-Flow-Timestamp}.{body}"))`
   and the timestamp must be within five minutes.
 
+- **Orbit email sequences.** Triggers "Someone replied to a sequence", "Booked a meeting from a sequence" and "Finished a
+  sequence without a reply" (one sequence, or any: `config.sequenceId`), and the action "Add to sequence" (a record id,
+  e.g. `{{trigger.record.id}}`, or an email address to find the record by; it hands on `{ enrollmentId, state, skipped,
+  reason }`, and someone already in a sequence, unsubscribed or without an address is skipped, not a failure). A
+  sequence trigger subscribes on the scope `seq:{id}` or `seq:*` through Orbit's sequence-level webhooks
+  (`/api/v1/sequences/webhooks`, signed as table webhooks are); the events carry the sequence, record, table, address and
+  time, never the reply's subject or text (Orbit leaves them out). The builder's dropdown lists the workspace's sequences
+  (`…/apps/orbit/schema`'s `sequences`). Until Orbit has sequences (its db/072), the entries show but switching such a
+  flow on, or running the action, fails with Orbit's own "Sequences aren't switched on in this Orbit workspace yet."
+
 - **Failure alerts.** "Email me when this flow fails" on a flow, and a workspace default (email a flow's creator)
   for flows that don't choose. At most one email per flow per hour: the first failure at once, the rest of the
   hour's in one digest, with a link to the newest failed run (`App:BaseUrl`). Within the daily email cap.
-- **Actions.** Orbit: create, update and find records, and add a comment to a record. Projects: create projects
+- **Actions.** Orbit: create, update and find records, add a comment to a record, and add someone to an email sequence. Projects: create projects
   and tasks, find tasks, update a task (status, assignee, due date) and add a comment.
 
 - **Outside apps** (db/004): Slack, Microsoft 365 and Google, connected with OAuth 2.0 per Flow workspace (owners

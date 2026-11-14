@@ -12,7 +12,8 @@ public sealed record PlannerContext(
     IReadOnlyList<PlannerTable> Tables,
     IReadOnlyList<PlannerProject> Projects,
     string TimeZone,
-    FlowDefinition? Current = null);
+    FlowDefinition? Current = null,
+    IReadOnlyList<PlannerProject>? Sequences = null);
 
 public sealed record PlannerTable(string Id, string Name, IReadOnlyList<string> Fields);
 
@@ -92,6 +93,11 @@ text; an extract step's fields is JSON like [{"name": "Order number", "type": "t
         {
             sb.AppendLine("Orbit tables (use the id as tableId; fields by name):");
             foreach (var t in ctx.Tables) sb.Append("- ").Append(t.Id).Append(": ").Append(t.Name).Append(" — ").AppendLine(string.Join(", ", t.Fields));
+        }
+        if (ctx.Sequences is { Count: > 0 } seqs)
+        {
+            sb.AppendLine("Orbit email sequences (use the id as sequenceId):");
+            foreach (var q in seqs) sb.Append("- ").Append(q.Id).Append(": ").AppendLine(q.Name);
         }
         if (ctx.Projects.Count > 0)
         {

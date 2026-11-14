@@ -25,14 +25,40 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     protected override void Authenticate(HttpRequestMessage req, string key) =>
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
 
+    /// <summary>The events a subscription asks for: a table's record events, or a sequence scope's (<c>seq:…</c>) sequence events.</summary>
+    public static IReadOnlyList<string> EventsFor(string scope) =>
+        scope.StartsWith(TriggerMatcher.SequencePrefix, StringComparison.Ordinal) ? FlowCatalog.SequenceEvents : Events;
+
+    /// <summary>
+    /// The tables for the pickers, and the workspace's sequences (the "Add to sequence" and sequence triggers' dropdown).
+    /// Before Orbit has sequences, <c>sequences</c> is empty and <c>sequencesOff</c> says why, so the builder can say so.
+    /// </summary>
     public override async Task<JsonObject> SchemaAsync(string key, CancellationToken ct)
     {
         var tables = await SendAsync<JsonArray>(HttpMethod.Get, "/api/v1/tables", null, key, null, ct);
-        return new JsonObject { ["tables"] = tables };
+        var o = new JsonObject { ["tables"] = tables };
+        try { o["sequences"] = await SequencesAsync(key, ct); }
+        catch (AppUnavailableException e) { o["sequences"] = new JsonArray(); o["sequencesOff"] = e.Message; }
+        catch (AppRefusedException e) { o["sequences"] = new JsonArray(); o["sequencesOff"] = e.Message; }
+        return o;
     }
+
+    /// <summary>The connected workspace's sequences (those of tables the key can read): [{ id, name, status, tableId, tableName }].</summary>
+    public Task<JsonArray> SequencesAsync(string key, CancellationToken ct) =>
+        SendAsync<JsonArray>(HttpMethod.Get, "/api/v1/sequences", null, key, null, ct);
 
     public override async Task<AppHook> SubscribeAsync(string key, string scope, string url, CancellationToken ct)
     {
+        if (scope.StartsWith(TriggerMatcher.SequencePrefix, StringComparison.Ordinal))
+        {
+            var seq = scope[TriggerMatcher.SequencePrefix.Length..];
+            var made = await SendAsync<JsonObject>(HttpMethod.Post, "/api/v1/sequences/webhooks",
+                new { sequenceId = seq == "*" ? null : seq, url, events = FlowCatalog.SequenceEvents, name = "Vantra Flow" }, key, null, ct);
+            var hid = Tokens.Text(made["id"]);
+            var hsecret = Tokens.Text(made["secret"]);
+            if (hid.Length == 0 || hsecret.Length == 0) throw new AppUnavailableException("Vantra Orbit answered something unexpected.");
+            return new AppHook(hid, hsecret);
+        }
         var res = await SendAsync<JsonObject>(HttpMethod.Post, "/api/v1/webhooks",
             new { tableId = scope, url, events = Events, name = "Vantra Flow" }, key, null, ct);
         var id = Tokens.Text(res["id"]);
@@ -41,11 +67,14 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         return new AppHook(id, secret);
     }
 
+    /// <summary>Remove a subscription: a sequence one (its id starts <c>sqh_</c>) or a table's.</summary>
     public override Task UnsubscribeAsync(string key, string remoteId, CancellationToken ct) =>
-        SendAsync<bool>(HttpMethod.Delete, "/api/v1/webhooks/" + Uri.EscapeDataString(remoteId), null, key, null, ct);
+        SendAsync<bool>(HttpMethod.Delete, (remoteId.StartsWith("sqh_", StringComparison.Ordinal) ? "/api/v1/sequences/webhooks/" : "/api/v1/webhooks/")
+            + Uri.EscapeDataString(remoteId), null, key, null, ct);
 
     public override async Task<JsonObject?> SampleAsync(string key, TriggerDef trigger, CancellationToken ct)
     {
+        if (FlowCatalog.IsSequenceEvent(trigger.Event)) return null; // the catalog's sample: a real reply isn't there to read
         var tableId = Tokens.Text(trigger.Config["tableId"]);
         if (tableId.Length == 0) return null;
         var t = Uri.EscapeDataString(tableId);
@@ -67,6 +96,27 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         ["actor"] = actor?.DeepClone(),
     };
 
+    /// <summary>
+    /// What a sequence trigger hands its flow (Orbit's sequence webhook, as it sends it): the event, the sequence, the record,
+    /// its table, the address and when. Never a subject or a snippet: Orbit doesn't send them.
+    /// </summary>
+    public static JsonObject SequenceTriggerData(JsonObject root)
+    {
+        var type = Tokens.Text(root["type"]);
+        var o = new JsonObject
+        {
+            ["event"] = type,
+            ["sequence"] = root["sequence"]?.DeepClone(),
+            ["record"] = root["record"]?.DeepClone(),
+            ["tableId"] = root["tableId"]?.DeepClone(),
+            ["email"] = root["email"]?.DeepClone(),
+            ["enrollment"] = root["enrollment"]?.DeepClone(),
+        };
+        foreach (var k in new[] { "repliedAt", "bookedAt", "finishedAt" })
+            if (root[k] is { } v) o[k] = v.DeepClone();
+        return o;
+    }
+
     private JsonObject Record(JsonObject rec)
     {
         var id = Tokens.Text(rec["id"]);
@@ -79,6 +129,7 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     {
         if (action == "record.find") return await FindAsync(key, input, ct);
         if (action == "record.comment") return await CommentAsync(key, input, idempotencyKey, ct);
+        if (action == "sequence.add") return await AddToSequenceAsync(key, input, idempotencyKey, ct);
         var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
         var fields = Fields(input["fields"]);
         if (fields.Count == 0) throw new AppRefusedException(400, "None of the fields have a value.", "empty");
@@ -154,6 +205,34 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     }
 
     public const int MaxComment = 20_000;
+
+    /// <summary>
+    /// "Add to sequence": the record (a record id, e.g. {{trigger.record.id}}, of the sequence's table) or an email address (the record
+    /// with it), added through Orbit's REST API. Hands on <c>{ enrollmentId, state, skipped, reason, recordId }</c>; someone already in a
+    /// sequence, unsubscribed or without an address is skipped, not a failure. Before Orbit has sequences, it fails with Orbit's own
+    /// "Sequences aren't switched on in this Orbit workspace yet."
+    /// </summary>
+    private async Task<JsonNode> AddToSequenceAsync(string key, JsonObject input, string idempotencyKey, CancellationToken ct)
+    {
+        var sequence = Required(input, "sequenceId", "The sequence");
+        var recordId = Tokens.Text(input["recordId"]).Trim();
+        var email = Tokens.Text(input["email"]).Trim();
+        if (recordId.Length == 0 && email.Length == 0) throw new AppRefusedException(400, "Choose the record, or give an email address.", "empty");
+        var tableId = Tokens.Text(input["tableId"]).Trim();
+        var res = await SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/sequences/{Uri.EscapeDataString(sequence)}/enrollments",
+            new { tableId = tableId.Length > 0 ? tableId : null, recordId = recordId.Length > 0 ? recordId : null, email = recordId.Length > 0 ? null : email },
+            key, null, ct, idempotencyKey);
+        var skipped = res["skipped"] is JsonValue sv && sv.TryGetValue<bool>(out var sk) && sk;
+        return new JsonObject
+        {
+            ["enrollmentId"] = res["enrollmentId"]?.DeepClone(),
+            ["state"] = skipped ? "skipped" : Tokens.Text(res["state"]) is { Length: > 0 } st ? st : "active",
+            ["skipped"] = skipped,
+            ["reason"] = res["reason"]?.DeepClone(),
+            ["message"] = res["message"]?.DeepClone(),
+            ["recordId"] = res["recordId"]?.DeepClone() ?? (recordId.Length > 0 ? recordId : null),
+        };
+    }
 
     /// <summary>The field values to write: by name or id, empty ones left out (an empty token doesn't clear a field).</summary>
     public static JsonObject Fields(JsonNode? node)

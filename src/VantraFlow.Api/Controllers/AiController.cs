@@ -128,6 +128,7 @@ public sealed class AiController(
         }
         var tables = new List<PlannerTable>();
         var projects = new List<PlannerProject>();
+        var sequences = new List<PlannerProject>();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(6));
         if (connected.Contains("orbit"))
@@ -138,6 +139,8 @@ public sealed class AiController(
                 foreach (var t in (found["tables"] as JsonArray ?? []).OfType<JsonObject>().Take(40))
                     tables.Add(new PlannerTable(Text(t["id"]), Text(t["name"]),
                         (t["fields"] as JsonArray ?? []).OfType<JsonObject>().Select(f => Text(f["name"])).Where(n => n.Length > 0).Take(40).ToList()));
+                foreach (var q in (found["sequences"] as JsonArray ?? []).OfType<JsonObject>().Take(40))
+                    sequences.Add(new PlannerProject(Text(q["id"]), Text(q["name"])));
             }
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException or OperationCanceledException) { /* drafted without them */ }
         }
@@ -151,7 +154,8 @@ public sealed class AiController(
             }
             catch (Exception e) when (e is AppUnavailableException or AppRefusedException or AppRevokedException or OperationCanceledException) { /* drafted without them */ }
         }
-        return new PlannerContext(connected, offered, tables.Where(t => t.Id.Length > 0).ToList(), projects.Where(p => p.Id.Length > 0).ToList(), timeZone, current);
+        return new PlannerContext(connected, offered, tables.Where(t => t.Id.Length > 0).ToList(), projects.Where(p => p.Id.Length > 0).ToList(), timeZone, current,
+            sequences.Where(q => q.Id.Length > 0).ToList());
     }
 
     private static string Text(JsonNode? n) => n is JsonValue v ? v.ToString() : "";

@@ -29,6 +29,11 @@ public static class PlannerCatalog
         ["trigger:hubspot/deal.stage"] = H(["pipeline: a pipeline id (leave out for every pipeline)",
             "stage: a stage id, e.g. closedwon (leave out for any change of stage)"]),
 
+        ["trigger:orbit/sequence.replied"] = H(["sequenceId: one sequence's id (leave out for any sequence)"]),
+        ["trigger:orbit/sequence.booked"] = H(["sequenceId: one sequence's id (leave out for any sequence)"]),
+        ["trigger:orbit/sequence.finished"] = H(["sequenceId: one sequence's id (leave out for any sequence)"]),
+        ["orbit/sequence.add"] = H(["recordId: a record of the sequence's table, e.g. {{trigger.record.id}}", "tableId: that record's table",
+            "email: instead of recordId, an address to find the record by"], "enrollmentId", "state", "skipped", "reason"),
         ["orbit/record.create"] = H([], "id", "url"),
         ["orbit/record.update"] = H([], "id", "url"),
         ["orbit/record.find"] = H(["matchField: a field name to match on", "matchValue: the value it equals (text or a token)",

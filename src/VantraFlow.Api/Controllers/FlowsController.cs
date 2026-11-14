@@ -379,6 +379,7 @@ public sealed class FlowsController(
         var t = def.Trigger;
         var scope = t.App switch
         {
+            "orbit" when FlowCatalog.IsSequenceEvent(t.Event) => TriggerMatcher.SequenceScope(t),
             "orbit" => Tokens.Text(t.Config["tableId"]) is { Length: > 0 and <= 64 } s ? s : null,
             "slack" => Tokens.Text(t.Config["channel"]) is { Length: > 0 and <= 64 } c ? c : null,
             _ => null,
