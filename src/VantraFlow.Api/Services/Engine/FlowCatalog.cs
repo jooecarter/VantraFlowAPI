@@ -29,6 +29,20 @@ public static class FlowCatalog
         E("orbit", "record.created", "Record created", ("tableId", "a table")),
         E("orbit", "record.updated", "Record updated", ("tableId", "a table")),
         E("orbit", "record.matches", "Record matches a condition", ("tableId", "a table"), ("condition", "a condition")),
+        E("orbit", "sequence.replied", "Someone replied to a sequence") with
+        {
+            Description = "Someone in an Orbit email sequence replies (and the sequence stops for them): config { sequenceId } (leave it empty for any sequence). " +
+                "Data: { event, sequence: { id, name }, record: { id, tableId }, tableId, email, repliedAt }.",
+        },
+        E("orbit", "sequence.booked", "Booked a meeting from a sequence") with
+        {
+            Description = "Someone in an Orbit email sequence books a meeting: config { sequenceId } (empty: any). Data: { event, sequence, record, tableId, email, bookedAt }.",
+        },
+        E("orbit", "sequence.finished", "Finished a sequence without a reply") with
+        {
+            Description = "Someone gets every step of an Orbit email sequence and doesn't reply: config { sequenceId } (empty: any). " +
+                "Data: { event, sequence, record, tableId, email, finishedAt }.",
+        },
         E("projects", "project.created", "Project created"),
         E("projects", "task.created", "Task created"),
         E("projects", "task.completed", "Task completed"),
@@ -91,6 +105,12 @@ public static class FlowCatalog
         E("orbit", "record.update", "Update record", ("tableId", "a table"), ("recordId", "the record"), ("fields", "at least one field")),
         E("orbit", "record.find", "Find records", ("tableId", "a table")),
         E("orbit", "record.comment", "Add comment to record", ("tableId", "a table"), ("recordId", "the record"), ("text", "the comment")),
+        E("orbit", "sequence.add", "Add to sequence", ("sequenceId", "a sequence")) with
+        {
+            Description = "Adds someone to an Orbit email sequence: config { sequenceId, recordId (a record of the sequence's table, e.g. {{trigger.record.id}}), " +
+                "email (instead of recordId: the record with this address) }. Output: { enrollmentId, state, skipped, reason, recordId }; skipped is true " +
+                "(with reason in_sequence, no_email, unsubscribed or not_found) when they weren't added.",
+        },
         E("projects", "project.create", "Create project", ("name", "the project's name")),
         E("projects", "task.create", "Create task", ("projectId", "the project"), ("name", "the task's name")),
         E("projects", "task.find", "Find tasks"),
@@ -229,9 +249,30 @@ public static class FlowCatalog
         return apps;
     }
 
+    /// <summary>The Orbit sequence triggers.</summary>
+    public static readonly string[] SequenceEvents = ["sequence.replied", "sequence.booked", "sequence.finished"];
+    public static bool IsSequenceEvent(string? e) => e is "sequence.replied" or "sequence.booked" or "sequence.finished";
+
+    private static JsonObject SequenceSample(TriggerDef t, DateTime now)
+    {
+        var at = Formatter.IsoUtc(now);
+        var data = new JsonObject
+        {
+            ["event"] = t.Event,
+            ["sequence"] = new JsonObject { ["id"] = Tokens.Text(t.Config["sequenceId"]) is { Length: > 0 } id ? id : "seq_sample", ["name"] = "New lead follow-up" },
+            ["record"] = new JsonObject { ["id"] = "rec_sample", ["tableId"] = "tbl_sample" },
+            ["tableId"] = "tbl_sample",
+            ["email"] = "ada@example.com",
+            ["enrollment"] = new JsonObject { ["id"] = "sqe_sample", ["state"] = t.Event == "sequence.replied" ? "replied" : t.Event == "sequence.booked" ? "booked" : "finished" },
+        };
+        data[t.Event == "sequence.replied" ? "repliedAt" : t.Event == "sequence.booked" ? "bookedAt" : "finishedAt"] = at;
+        return data;
+    }
+
     /// <summary>What a trigger hands the first step when there's no real event to test with.</summary>
     public static JsonObject Sample(TriggerDef t, DateTime now) => (t.App, t.Event) switch
     {
+        ("orbit", "sequence.replied" or "sequence.booked" or "sequence.finished") => SequenceSample(t, now),
         ("orbit", _) => new JsonObject
         {
             ["event"] = t.Event == "record.matches" ? "record.updated" : t.Event,

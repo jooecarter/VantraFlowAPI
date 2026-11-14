@@ -112,7 +112,7 @@ public sealed class Connections(
             try { hook = await api.SubscribeAsync(key, scope, ReceiverUrl(app, id), ct); }
             catch (AppRevokedException) { await LostAsync(row, $"Disconnected in {api.AppName}."); throw; }
             await repo.InsertSubscriptionAsync(new SubscriptionRow(id, workspaceId, row.Id, app, scope, hook.Id,
-                secrets.Protect(hook.Secret, workspaceId, id), app == "orbit" ? string.Join(",", OrbitApi.Events) : ProjectsApi.Events, DateTime.UtcNow, null));
+                secrets.Protect(hook.Secret, workspaceId, id), app == "orbit" ? string.Join(",", OrbitApi.EventsFor(scope)) : ProjectsApi.Events, DateTime.UtcNow, null));
         }
     }
 

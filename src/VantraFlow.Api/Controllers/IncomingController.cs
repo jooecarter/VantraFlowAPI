@@ -119,10 +119,19 @@ public sealed class IncomingController(
         try { root = JsonNode.Parse(body) as JsonObject ?? throw new JsonException(); }
         catch (JsonException) { return BadRequest(new { error = "The body must be JSON." }); }
         var type = Tokens.Text(root["type"]);
-        if (type is not ("record.created" or "record.updated")) return Ok(new { ignored = true });
+        var sequence = FlowCatalog.IsSequenceEvent(type);
+        if (type is not ("record.created" or "record.updated") && !sequence) return Ok(new { ignored = true });
         var eventId = Request.Headers["X-Vantra-Event-Id"].ToString() is { Length: > 0 and <= 80 } e ? e : Tokens.Text(root["id"]);
         if (!await engine.ClaimKeyAsync(sub.WorkspaceId, "", $"in:{sub.Id}:{eventId}")) return Ok(new { duplicate = true });
 
+        if (sequence)
+        {
+            // A sequence event (Orbit's sequence-level webhook): scoped to the subscription it came on (one sequence, or every one).
+            await engine.EnqueueAsync(sub.WorkspaceId, EventSources.Orbit, type, sub.Scope, null, OrbitApi.SequenceTriggerData(root).ToJsonString(), false, DateTime.UtcNow);
+            await connections.SubscriptionSeenAsync(sub.Id);
+            signal.Poke();
+            return Ok(new { accepted = true });
+        }
         var flowCaused = IsFlowOrbit(root, conn.KeyId);
         var data = OrbitApi.TriggerData(type, root["table"], root["record"], root["changes"], root["actor"]);
         await engine.EnqueueAsync(sub.WorkspaceId, EventSources.Orbit, type, Tokens.Text(root["table"]?["id"]), null, data.ToJsonString(), flowCaused, DateTime.UtcNow);

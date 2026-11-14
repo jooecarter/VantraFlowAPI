@@ -55,6 +55,8 @@ public sealed record AppHook(string Id, string Secret);
 public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
 {
     public const string ClientName = "VantraApps";
+    /// <summary>The code Orbit answers with when sequences aren't switched on in the workspace yet (503).</summary>
+    public const string OffCode = "sequences_off";
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(12);
     protected static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -163,6 +165,8 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
                 catch (JsonException e) { throw new AppUnavailableException($"{AppName} answered something unexpected.", e); }
             }
             var (message, code) = await ErrorAsync(res, timeout.Token);
+            // A feature the app hasn't switched on yet (Orbit's sequences before its db/072) says so in its own words.
+            if (code == OffCode) throw new AppUnavailableException(message ?? $"That isn't switched on in {AppName} yet.", status: (int)res.StatusCode);
             if ((int)res.StatusCode >= 500 || res.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout)
                 throw new AppUnavailableException(code == "not_ready" ? $"{AppName} isn't ready for Vantra Flow yet." : $"{AppName} is unavailable.", status: (int)res.StatusCode);
             if (res.StatusCode == HttpStatusCode.Unauthorized && key is not null) throw new AppRevokedException(AppName);

@@ -41,6 +41,9 @@ public static class TriggerMatcher
         switch (t.App)
         {
             case EventSources.Orbit:
+                // A sequence trigger: its event, from the subscription for its sequence (or for every sequence).
+                if (FlowCatalog.IsSequenceEvent(t.Event))
+                    return ev.Kind == t.Event && string.Equals(SequenceScope(t), ev.Scope, StringComparison.Ordinal) ? data : null;
                 if (!string.Equals(t.Config["tableId"]?.GetValue<string>(), ev.Scope, StringComparison.Ordinal)) return null;
                 return t.Event switch
                 {
@@ -66,6 +69,15 @@ public static class TriggerMatcher
                 return null;
         }
     }
+
+    /// <summary>
+    /// The scope a sequence trigger listens on (and Flow subscribes to in Orbit): <c>seq:{id}</c> for one sequence,
+    /// <c>seq:*</c> for every sequence. Each subscription's events arrive with its own scope.
+    /// </summary>
+    public static string SequenceScope(TriggerDef t) =>
+        Tokens.Text(t.Config["sequenceId"]).Trim() is { Length: > 0 and <= 60 } id && id != "*" ? SequencePrefix + id : SequencePrefix + "*";
+
+    public const string SequencePrefix = "seq:";
 
     private static bool On(JsonNode? n) => n is JsonValue v && (v.TryGetValue<bool>(out var b) ? b : Tokens.Text(v) == "true");
 
