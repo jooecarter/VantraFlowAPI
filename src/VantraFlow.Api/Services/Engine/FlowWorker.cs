@@ -36,8 +36,9 @@ public sealed class FlowSignal
 /// them — or put them back with backoff, and 'dead' with the error after the last try.</item>
 /// <item><b>Runs</b>: claim due runs (new, past a delay, due a retry, or whose instance died), run their next
 /// steps (<see cref="RunExecutor"/>) and save the log.</item>
-/// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), and send the
-/// failure alerts that are due (<see cref="FailureAlerts"/>, db/002).</item>
+/// <item><b>Each minute</b>: fire the schedule slots that have come due, each once (flow.FiredKeys), send the
+/// failure alerts that are due (<see cref="FailureAlerts"/>, db/002), and scan the date flows that are due
+/// (<see cref="Triggers.DateTriggers"/>, db/014).</item>
 /// <item><b>Webhooks</b>: outgoing deliveries due (db/012), beside the loop (<see cref="Developer.WebhookDispatcher"/>).</item>
 /// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008), and the daily failure
 /// digests that are due (<see cref="Reliability"/>, db/010).</item>
@@ -186,6 +187,9 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Schedule tick failed"); }
             try { await sp.GetRequiredService<FailureAlerts>().SendDueAsync(now, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Failure alerts tick failed"); }
+            // Date triggers (db/014): each date flow's scan, every few minutes under its own lease.
+            try { await sp.GetRequiredService<Triggers.DateTriggers>().RunDueAsync(me, DateTime.UtcNow, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Date triggers tick failed"); }
             // Polling triggers (Outlook, Gmail, Google Sheets), once db/004 has run.
             try { await sp.GetRequiredService<OAuth.PollTriggers>().RunDueAsync(DateTime.UtcNow, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Poll tick failed"); }
@@ -231,6 +235,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) { log.LogInformation(ex, "Billing prune failed"); }
             try { if (await sp.GetRequiredService<FlowSchema>().DeveloperReadyAsync()) await sp.GetRequiredService<DeveloperRepository>().PruneAsync(now); }
             catch (Exception ex) { log.LogInformation(ex, "Webhook deliveries prune failed"); }
+            try { var t = sp.GetRequiredService<TriggersRepository>(); if (await t.ReadyAsync()) await t.PruneAsync(now); }
+            catch (Exception ex) { log.LogInformation(ex, "Form and date ledger prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;

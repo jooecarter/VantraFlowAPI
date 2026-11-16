@@ -27,6 +27,15 @@ public sealed class ConnectionsRepository(SqlConnectionFactory factory)
             new { WorkspaceId = workspaceId, App = app });
     }
 
+    /// <summary>The live connections, in any Flow workspace, to this app workspace (who may ask Flow on its behalf).</summary>
+    public async Task<IReadOnlyList<ConnectionRow>> LinkingAsync(string app, Guid remoteWorkspaceId)
+    {
+        using var conn = factory.Flow();
+        return (await conn.QueryAsync<ConnectionRow>(
+            $"SELECT TOP (20) {ConnectionCols} FROM flow.Connections WHERE App = @App AND RemoteWorkspaceId = @Remote AND RevokedAt IS NULL;",
+            new { App = app, Remote = remoteWorkspaceId })).ToList();
+    }
+
     public async Task<ConnectionRow?> GetAsync(Guid id)
     {
         using var conn = factory.Flow();

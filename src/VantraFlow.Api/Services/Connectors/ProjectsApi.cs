@@ -61,6 +61,33 @@ public sealed class ProjectsApi(IHttpClientFactory http, IConfiguration config) 
         };
     }
 
+    /// <summary>
+    /// One task as it is now, for a button run (<c>GET v1/tasks/{id}</c>, Projects' summary: id, name, status, due date,
+    /// assignee, project, done, url). Null when it isn't there (or the key can't see it).
+    /// </summary>
+    public async Task<JsonObject?> TaskAsync(string key, Guid taskId, CancellationToken ct)
+    {
+        try { return await SendAsync<JsonObject>(HttpMethod.Get, $"{P}/tasks/{taskId}", null, key, null, ct); }
+        catch (AppRefusedException e) when (e.Status == 404) { return null; }
+    }
+
+    /// <summary>
+    /// The tasks due on a day in [from, to] (<c>GET v1/tasks/due</c>, at most 500, done ones included and marked), for the
+    /// date triggers. A Projects without it (404) can't be scanned yet: that's "unavailable", tried again later.
+    /// </summary>
+    public async Task<List<JsonObject>> TasksDueAsync(string key, DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        try
+        {
+            var list = await SendAsync<JsonArray>(HttpMethod.Get, $"{P}/tasks/due?from={from:yyyy-MM-dd}&to={to:yyyy-MM-dd}&limit=500", null, key, null, ct);
+            return list.OfType<JsonObject>().ToList();
+        }
+        catch (AppRefusedException e) when (e.Status is 404 or 405)
+        {
+            throw new AppUnavailableException("Vantra Projects needs an update before date triggers can read its tasks.", status: e.Status);
+        }
+    }
+
     public override async Task<JsonNode?> ActAsync(string key, string action, JsonObject input, string idempotencyKey, CancellationToken ct)
     {
         switch (action)

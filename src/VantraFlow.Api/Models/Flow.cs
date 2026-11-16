@@ -130,7 +130,7 @@ public sealed record FlowSummaryDto(
 public sealed record FlowDto(
     string Id, string Name, string? Description, bool Enabled, JsonNode Definition, int Version, string? HookUrl, bool HookSigned,
     string? PausedReason, string? TemplateId, string? NextRunAt, string UpdatedAt, string? LastRunAt, string? LastRunStatus,
-    FlowAlertsDto? Alerts = null);
+    FlowAlertsDto? Alerts = null, Services.Triggers.FormLinkDto? Form = null);
 
 /// <summary>
 /// A flow's failure alert: whether it emails (<c>On</c>: its own choice, <c>Own</c>, else the workspace's default), and

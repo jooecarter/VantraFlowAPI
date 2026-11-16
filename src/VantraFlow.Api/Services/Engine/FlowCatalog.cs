@@ -43,10 +43,43 @@ public static class FlowCatalog
             Description = "Someone gets every step of an Orbit email sequence and doesn't reply: config { sequenceId } (empty: any). " +
                 "Data: { event, sequence, record, tableId, email, finishedAt }.",
         },
+        E("orbit", "date.relative", "Before or after a date", ("tableId", "a table"), ("field", "the date field")) with
+        {
+            Description = "Runs for each record of a table on, before or after a date in it, once per date (a changed date moves its run): config { tableId, " +
+                "field (a date field's id), amount, unit: minutes | hours | days | weeks, direction: before | on | after, time: \"HH:mm\" (date-only fields), " +
+                "zone (a time zone, default the workspace's), condition (Only if) }. Data: { event, table, record: { id, url, fields }, date: { field, value }, scheduledFor }.",
+        },
+        E("orbit", "button.record", "A button on a record", ("tableId", "a table")) with
+        {
+            Description = "Someone starts it from a record in Orbit (Run a flow on the record): config { tableId, label (optional, default the flow's name), " +
+                "subtitle (optional) }. Data: { record: { id, url, fields }, table, runBy: { id, name, email }, runAt }.",
+        },
         E("projects", "project.created", "Project created"),
         E("projects", "task.created", "Task created"),
         E("projects", "task.completed", "Task completed"),
         E("projects", "client.created", "Client created"),
+        E("projects", "date.relative", "Before or after a date") with
+        {
+            Description = "Runs for each task on, before or after its due date, once per date: config { amount, unit: minutes | hours | days | weeks, " +
+                "direction: before | on | after, time: \"HH:mm\", zone, condition }. Data: { event, task: { id, name, status, dueDate, assigneeName, url }, project: { id, name }, dueDate, scheduledFor }.",
+        },
+        E("projects", "task.overdue", "A task becomes overdue") with
+        {
+            Description = "The morning after a task's due date, if it isn't done, once per task and due date: config { time: \"HH:mm\" (default 09:00), zone }. " +
+                "Data: { event, task: { id, name, status, dueDate, assigneeName, url }, project: { id, name }, dueDate, scheduledFor }.",
+        },
+        E("projects", "button.record", "A button on a task") with
+        {
+            Description = "Someone starts it from a task in Projects (Run a flow on the task): config { target: task, label (optional), subtitle (optional) }. " +
+                "Data: { record and task: { id, name, status, dueDate, assigneeName, projectId, projectName, url }, runBy: { id, name, email }, runAt }.",
+        },
+        E("form", "form.submitted", "A form") with
+        {
+            Description = "Teammates or anyone with the link fill in a form, and each answer starts one run: config { title, description, " +
+                "questions: [{ key, label, type: text | longText | email | number | date | dateRange | choice | checkbox | person, required, options (choice) }] (at most 20), " +
+                "access: team | public, showInApps (team forms: listed under Requests in Orbit and Projects), submitLabel, confirmation }. " +
+                "Data: { answers: { <key>: value }, submittedBy: { id, name, email } (team forms), submittedAt, form: { id, title } }.",
+        },
         E("schedule", "interval", "Every few minutes or hours", ("every", "how often")),
         E("schedule", "daily", "Every day", ("time", "a time")),
         E("schedule", "weekly", "Every week", ("time", "a time"), ("days", "the days")) with
@@ -269,9 +302,51 @@ public static class FlowCatalog
         return data;
     }
 
+    private static JsonObject SampleRecord() => new()
+    {
+        ["id"] = "rec_sample",
+        ["url"] = "https://orbit.vantrasoftware.com/r/rec_sample",
+        ["fields"] = new JsonObject { ["Name"] = "Harbour & Co", ["Email"] = "priya@example.com", ["Status"] = "Active" },
+    };
+
+    private static JsonObject SampleTask(DateTime now) => new()
+    {
+        ["id"] = Guid.Empty, ["name"] = "Send the proposal", ["status"] = "In Progress", ["dueDate"] = now.AddDays(3).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+        ["assigneeName"] = "Alex Morgan", ["projectId"] = Guid.Empty, ["projectName"] = "Website refresh", ["done"] = false, ["url"] = "https://projects.vantrasoftware.com",
+    };
+
+    private static JsonObject SamplePerson() => new() { ["id"] = "vid_sample", ["name"] = "Alex Morgan", ["email"] = "alex@example.com" };
+
     /// <summary>What a trigger hands the first step when there's no real event to test with.</summary>
     public static JsonObject Sample(TriggerDef t, DateTime now) => (t.App, t.Event) switch
     {
+        ("form", _) => VantraFlow.Api.Services.Triggers.FormRules.Sample(t.Config, now),
+        ("orbit", "button.record") => new JsonObject
+        {
+            ["record"] = SampleRecord(), ["table"] = new JsonObject { ["id"] = Tokens.Text(t.Config["tableId"]) is { Length: > 0 } bt ? bt : "tbl_sample", ["name"] = "Customers" },
+            ["app"] = "orbit", ["runBy"] = SamplePerson(), ["runAt"] = Formatter.IsoUtc(now),
+        },
+        ("projects", "button.record") => new JsonObject
+        {
+            ["record"] = SampleTask(now), ["task"] = SampleTask(now), ["app"] = "projects", ["runBy"] = SamplePerson(), ["runAt"] = Formatter.IsoUtc(now),
+        },
+        ("orbit", "date.relative") => new JsonObject
+        {
+            ["event"] = t.Event,
+            ["table"] = new JsonObject { ["id"] = Tokens.Text(t.Config["tableId"]) is { Length: > 0 } dt ? dt : "tbl_sample", ["name"] = "Customers" },
+            ["record"] = SampleRecord(),
+            ["date"] = new JsonObject { ["field"] = "Renewal date", ["value"] = now.AddDays(3).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) },
+            ["scheduledFor"] = Formatter.IsoUtc(now),
+        },
+        ("projects", "date.relative" or "task.overdue") => new JsonObject
+        {
+            ["event"] = t.Event,
+            ["task"] = SampleTask(now),
+            ["project"] = new JsonObject { ["id"] = Guid.Empty, ["name"] = "Website refresh" },
+            ["dueDate"] = now.AddDays(t.Event == "task.overdue" ? -1 : 3).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            ["link"] = "https://projects.vantrasoftware.com",
+            ["scheduledFor"] = Formatter.IsoUtc(now),
+        },
         ("orbit", "sequence.replied" or "sequence.booked" or "sequence.finished") => SequenceSample(t, now),
         ("orbit", _) => new JsonObject
         {
