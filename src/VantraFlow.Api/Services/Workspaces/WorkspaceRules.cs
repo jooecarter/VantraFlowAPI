@@ -76,8 +76,8 @@ public static class WorkspaceRules
     public const int NameMin = 2;
     public const int NameMax = 80;
     public const int DefaultMaxOwned = 20;
-    /// <summary>Flow's green: the tile colour of a workspace that hasn't chosen one.</summary>
-    public const string DefaultColor = "#12855d";
+    /// <summary>The suite's slate: the tile colour of a workspace that hasn't chosen one.</summary>
+    public const string DefaultColor = "#2c4a5d";
 
     public static bool CanManage(string? role) => FlowRoles.CanManage(role);
     public static bool CanInvite(string? role) => FlowRoles.CanManage(role);

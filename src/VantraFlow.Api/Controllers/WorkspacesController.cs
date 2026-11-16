@@ -370,7 +370,7 @@ public sealed class WorkspacesController(
     private ObjectResult? LookProblem(string? color, string? logo)
     {
         if (!string.IsNullOrWhiteSpace(color) && WorkspaceRules.CleanColor(color) is null)
-            return Refuse(WorkspaceCodes.InvalidColor, "Choose a colour like #12855d.");
+            return Refuse(WorkspaceCodes.InvalidColor, "Choose a colour like #2c4a5d.");
         if (!string.IsNullOrEmpty(logo) && LogoValidator.Problem(logo) is { } bad)
             return Refuse(WorkspaceCodes.InvalidLogo, bad);
         return null;
