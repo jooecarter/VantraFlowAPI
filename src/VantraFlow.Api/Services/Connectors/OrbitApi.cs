@@ -73,8 +73,11 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/enabled", new { enabled }, key, null, ct);
 
     /// <summary>Send a report schedule's email to its recipients now (Orbit rate-limits it): <c>{ status }</c>.</summary>
+    /// <summary>How long a report's Send now may take: Orbit builds the report and its PDF, then sends each email.</summary>
+    public static readonly TimeSpan SendNowTimeout = TimeSpan.FromSeconds(60);
+
     public Task<JsonObject> SendReportNowAsync(string key, string id, CancellationToken ct) =>
-        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/send", new { }, key, null, ct);
+        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/send", new { }, key, null, ct, timeLimit: SendNowTimeout);
 
     /// <summary>The connected workspace's sequences (those of tables the key can read): [{ id, name, status, tableId, tableName }].</summary>
     public Task<JsonArray> SequencesAsync(string key, CancellationToken ct) =>

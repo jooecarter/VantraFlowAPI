@@ -105,6 +105,18 @@ public sealed class ScheduleController(
             log.LogInformation("Workspace {Workspace}: Orbit report {Id} sent now from the Schedule page", workspaceId, id);
             return Ok(new { status = res["status"]?.GetValue<string>() ?? "sent" });
         }
+        catch (AppUnavailableException u) when (u.TimedOut)
+        {
+            // Orbit may still be sending it: don't invite a second send straight away.
+            return StatusCode(504, new { error = "Orbit is taking a while to send it. Check your inbox in a few minutes before trying again.", code = "send_slow" });
+        }
+        catch (AppUnavailableException u) when (u.Code is "send_failed" or "not_ready" && u.AppMessage is { Length: > 0 })
+        {
+            // Orbit's own reason (e.g. its email isn't set up, or the mail server refused it), not "couldn't be reached".
+            return StatusCode(502, new { error = Clip(u.AppMessage), code = u.Code });
+        }
         catch (Exception e) when (e is AppRefusedException or AppUnavailableException or AppRevokedException) { return FromOrbit(e); }
     }
+
+    private static string Clip(string s) => s.Length <= 300 ? s : s[..300];
 }
