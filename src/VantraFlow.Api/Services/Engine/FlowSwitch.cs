@@ -14,7 +14,8 @@ public sealed record SwitchOutcome(FlowRow? Flow, IReadOnlyList<DefinitionError>
 /// </summary>
 public sealed class FlowSwitch(
     FlowsRepository flows, WorkspacesRepository workspaces, Connections connections, FlowSchema schema, OAuthRepository oauth,
-    OAuth.OAuthProviders providers, OAuth.OAuthActions oauthActions, Billing.Plans plans, IConfiguration config, Ai.AiClient ai)
+    OAuth.OAuthProviders providers, OAuth.OAuthActions oauthActions, Billing.Plans plans, IConfiguration config, Ai.AiClient ai,
+    TriggersRepository? triggers = null, Triggers.FormLinks? forms = null)
 {
     public async Task<SwitchOutcome> SetAsync(FlowRow f, bool enabled, string by, CancellationToken ct)
     {
@@ -41,12 +42,18 @@ public sealed class FlowSwitch(
                 if (!ai.Configured) errors.Add(new DefinitionError(null, Ai.AiStepRules.NotSetUp));
                 else if (!await schema.InsightsReadyAsync()) errors.Add(new DefinitionError(null, Ai.AiStepRules.NotReady));
             }
+            // Forms, date triggers and buttons (db/014): refused until it has run.
+            if ((Triggers.FormRules.IsForm(def.Trigger) || Triggers.DateRules.IsDateTrigger(def.Trigger) || Triggers.ButtonRules.IsButton(def.Trigger))
+                && (triggers is null || !await triggers.ReadyAsync()))
+                errors.Add(new DefinitionError(null, "Forms, date triggers and buttons arrive with the next server update."));
             if (errors.Count > 0) return new SwitchOutcome(null, Errors: errors);
             // The plan: its active-flow limit, and premium apps and steps.
             if (await workspaces.GetAsync(workspaceId) is { } wsRow && await plans.CanEnableAsync(wsRow, id, def, DateTime.UtcNow) is { } block)
                 return new SwitchOutcome(null, Plan: block);
         }
         await flows.SetEnabledAsync(workspaceId, id, enabled, by);
+        // A form's link follows the switch (and is made here for a flow that came in by import or the API).
+        if (forms is not null && Triggers.FormRules.IsForm(def.Trigger)) await forms.SyncAsync(f with { Enabled = enabled }, def);
         if (enabled && def.Trigger.App == "slack" && Tokens.Text(def.Trigger.Config["channel"]) is { Length: > 0 } channel && await schema.ConnectorsReadyAsync())
             await oauthActions.JoinSlackChannelAsync(workspaceId, channel, ct);
         try

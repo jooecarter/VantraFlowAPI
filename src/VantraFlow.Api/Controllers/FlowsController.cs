@@ -33,7 +33,7 @@ public sealed class FlowsController(
     WorkspacesRepository workspaces, FlowsRepository flows, EngineRepository engine, Connections connections, IStepActions actions,
     FlowSecrets secrets, IConfiguration config, AlertsRepository alerts, FlowSchema schema, VersionsRepository versions,
     Services.OAuth.OAuthActions oauthActions, Services.Billing.Plans plans,
-    StepsRepository steps, FlowSwitch flowSwitch, ITeamStore team)
+    StepsRepository steps, FlowSwitch flowSwitch, ITeamStore team, Services.Triggers.FormLinks? formLinks = null)
     : FlowControllerBase(workspaces)
 {
     /// <summary>
@@ -72,6 +72,7 @@ public sealed class FlowsController(
             body.TemplateId is { Length: <= 40 } t ? t : null, null, Sub, now, Sub, now, null, null), def);
         await flows.InsertAsync(row);
         var saved = (await flows.GetAsync(workspaceId, row.Id))!;
+        if (formLinks is not null) await formLinks.SyncAsync(saved, def);
         await KeepVersionAsync(saved, null);
         await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowCreated, saved.Id, saved.Name, saved.Version,
             body.TemplateId is { Length: > 0 } ? "From a template" : null);
@@ -112,6 +113,8 @@ public sealed class FlowsController(
         var updated = Shape(f with { Name = name, Description = description, UpdatedBy = Sub, UpdatedAt = DateTime.UtcNow }, def);
         await flows.UpdateAsync(updated);
         var saved = (await flows.GetAsync(workspaceId, id))!;
+        // A form trigger's link (db/014): made on the first save, kept in step after.
+        if (formLinks is not null) await formLinks.SyncAsync(saved, def);
         await KeepVersionAsync(saved, note);
         await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowEdited, id, saved.Name, saved.Version, note);
         if (saved.Name != f.Name) await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowRenamed, id, saved.Name, saved.Version, $"Was “{f.Name}”");
@@ -202,6 +205,7 @@ public sealed class FlowsController(
         if (refusal is not null) return refusal;
         if (await flows.GetAsync(workspaceId, id) is not { } f) return NoContent();
         await flows.DeleteAsync(workspaceId, id);
+        if (formLinks is not null) await formLinks.ForgetAsync(id);
         if (await schema.VersionsReadyAsync()) await versions.DeleteAsync(workspaceId, id);
         if (await team.ReadyAsync()) await team.ForgetFlowAsync(workspaceId, id);
         await LogAsync(workspaceId, Services.Team.ActivityKinds.FlowDeleted, id, f.Name, f.Version);
@@ -399,7 +403,8 @@ public sealed class FlowsController(
         var next = f.Enabled && def.Trigger.App == "schedule" ? ScheduleRules.Next(def.Trigger, tz, DateTime.UtcNow) : null;
         return new FlowDto(f.Id, f.Name, f.Description, f.Enabled, JsonSerializer.SerializeToNode(def, FlowDefinition.Json)!, f.Version,
             f.HookId is null ? null : $"{connections.ApiBase}/api/hooks/{f.HookId}", f.HookSecretCipher is not null, f.PausedReason, f.TemplateId,
-            Iso(next), Iso(f.UpdatedAt), Iso(f.LastRunAt), f.LastRunStatus, await AlertsDtoAsync(f.WorkspaceId, f.Id));
+            Iso(next), Iso(f.UpdatedAt), Iso(f.LastRunAt), f.LastRunStatus, await AlertsDtoAsync(f.WorkspaceId, f.Id),
+            f.TriggerApp == Services.Triggers.FormRules.App && formLinks is not null ? await formLinks.LinkAsync(f.Id) : null);
     }
 
     private static FlowSummaryDto Summary(FlowRow f, FlowStatsRow? s)

@@ -136,13 +136,29 @@ WHERE f.Enabled = 1 AND f.TriggerApp = N'schedule';", (f, tz) => (f, tz), splitO
         return rows.ToList();
     }
 
-    /// <summary>The scopes enabled flows listen to in an app (Orbit: table ids; Projects: <c>*</c> when any).</summary>
+    /// <summary>
+    /// The scopes enabled flows listen to in an app (Orbit: table ids; Projects: <c>*</c> when any). Buttons and date
+    /// triggers need no webhook: they're asked for or scanned.
+    /// </summary>
     public async Task<IReadOnlyList<string>> ScopesInUseAsync(Guid workspaceId, string app)
     {
         using var conn = factory.Flow();
         return (await conn.QueryAsync<string>(@"
-SELECT DISTINCT ISNULL(TriggerScope, N'*') FROM flow.Flows WHERE WorkspaceId = @WorkspaceId AND TriggerApp = @App AND Enabled = 1;",
+SELECT DISTINCT ISNULL(TriggerScope, N'*') FROM flow.Flows
+WHERE WorkspaceId = @WorkspaceId AND TriggerApp = @App AND Enabled = 1
+  AND TriggerEvent NOT IN (N'button.record', N'date.relative', N'task.overdue');",
             new { WorkspaceId = workspaceId, App = app })).ToList();
+    }
+
+    /// <summary>The enabled flows of these workspaces with this trigger (buttons, forms), newest first.</summary>
+    public async Task<IReadOnlyList<FlowRow>> ByTriggerAsync(IReadOnlyCollection<Guid> workspaceIds, string app, string triggerEvent)
+    {
+        if (workspaceIds.Count == 0) return [];
+        using var conn = factory.Flow();
+        return (await conn.QueryAsync<FlowRow>($@"
+SELECT TOP (200) {FlowCols} FROM flow.Flows
+WHERE WorkspaceId IN @Ids AND TriggerApp = @App AND TriggerEvent = @Event AND Enabled = 1
+ORDER BY Name;", new { Ids = workspaceIds.ToArray(), App = app, Event = triggerEvent })).ToList();
     }
 
     /// <summary>The enabled flows that use an app anywhere (to pause when it's disconnected).</summary>

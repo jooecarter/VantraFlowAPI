@@ -283,6 +283,10 @@ public static partial class DefinitionRules
             foreach (var key in trigger.Required)
                 if (Empty(def.Trigger.Config[key])) errors.Add(new(null, $"The trigger needs {trigger.Label(key)}."));
         if (trigger is not null && def.Trigger.App == "schedule") errors.AddRange(ScheduleRules.Validate(def.Trigger));
+        // The new triggers (db/014): a form's questions, a date's offset, a button's label.
+        if (trigger is not null && Triggers.FormRules.IsForm(def.Trigger)) errors.AddRange(Triggers.FormRules.Check(def.Trigger.Config).Select(m => new DefinitionError(null, m)));
+        if (trigger is not null && Triggers.DateRules.IsDateTrigger(def.Trigger)) errors.AddRange(Triggers.DateRules.Check(def.Trigger).Select(m => new DefinitionError(null, m)));
+        if (trigger is not null && Triggers.ButtonRules.IsButton(def.Trigger)) errors.AddRange(Triggers.ButtonRules.Check(def.Trigger).Select(m => new DefinitionError(null, m)));
 
         var all = def.AllSteps().ToList();
         if (all.Count == 0) errors.Add(new(null, "Add a step after the trigger."));

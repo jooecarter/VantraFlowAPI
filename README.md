@@ -17,6 +17,7 @@ db/005_workspace_invites.sql workspaces: their colour and logo, and invitations 
 db/006_ai_insights.sql    the AI builder's monthly count, time-saved figures, daily run totals, Insights' indexes
 db/010_reliability.sql    error handling: auto-pause per flow, the daily failure digest (on for new workspaces)
 db/013_mailboxes.sql      send from your own mailbox: SMTP mailboxes (sealed passwords) and the workspace's default sender
+db/014_triggers.sql       forms (their links and answers), the date triggers' ledger and scans
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -119,6 +120,45 @@ bash scripts/sqlcheck.sh
   time, never the reply's subject or text (Orbit leaves them out). The builder's dropdown lists the workspace's sequences
   (`…/apps/orbit/schema`'s `sequences`). Until Orbit has sequences (its db/072), the entries show but switching such a
   flow on, or running the action, fails with Orbit's own "Sequences aren't switched on in this Orbit workspace yet."
+
+- **Forms, date triggers and buttons** (db/014; `Services/Triggers`, `FormsController`, `AppLinksController`, `TriggersController`).
+  - **A form** (`form / form.submitted`): a title, a description and up to 20 questions (short text, long text, email, number,
+    date, date range, single choice, checkbox, and person: team forms only, filled with whoever is signed in) in the flow's
+    definition; who can fill it in (team members of this Flow workspace, signed in with the shared Vantra identity, or anyone
+    with the link); a button label (default "Send") and a confirmation. Saving makes its link, `{App:BaseUrl}/f/{token}/{slug}`:
+    the slug is unique per workspace, the 12-character token unguessable (`flow.FlowForms`). Each answer starts one run with
+    `trigger.answers.{key}` (keys slugged from the labels and kept when a label changes), `trigger.submittedBy` (team forms)
+    and `trigger.submittedAt`. The page (`GET api/forms/{token}`, `POST …/submit`) checks, in order: the flow is on; a team form's
+    Flow session and membership (401 `sign_in`, 403 `not_member`); a honeypot and a signed stamp (a bot's answer gets a pretend
+    success); Turnstile when `Forms:Turnstile:SiteKey` and `SecretKey` are set (Orbit's public forms' settings); 30 requests a
+    minute per address, 20 answers an hour per address per public form and 300 an hour per form (429 `form_busy`); each answer
+    at most 5,000 characters and 40,000 altogether, as data, never HTML; then the run quota (over it: "This form isn't taking
+    answers right now."). The same submission key twice starts one run. Answers are never logged. "Show it in Orbit and
+    Projects" (team forms) lists the form under Requests in those apps.
+  - **Before or after a date** (`orbit / date.relative` on a table's date field; `projects / date.relative` on tasks' due
+    dates): an amount of minutes, hours, days or weeks before, on the day or after, a time of day and a time zone for date-only
+    values (date-and-time values keep their own time), and an optional "Only if" condition (the condition model of "Record
+    matches"). **A task becomes overdue** (`projects / task.overdue`): the morning after its due day (09:00 by default, in the
+    workspace's time zone), unless it's done. The worker scans each date flow every three minutes under a lease
+    (`flow.DateCursors`), asking Orbit's REST API v1 for the records in a range of days (`filter[field][gte]`, `[lte]`; an Orbit
+    without range filters is paged, up to 2,000 records) and Projects for its due tasks (`v1/tasks/due`). Each (flow, record,
+    date value, offset) fires once (`flow.DateFirings`), so a changed date moves its run. After downtime it fires what came due
+    in the last 24 hours, never older, and never before the flow was switched on or saved. Runs go through the plan's quota,
+    the loop breaker and pauses like any other (a run over the quota is logged as skipped). The builder's "Coming up" is
+    `POST api/w/{ws}/flows/{id}/coming-up`.
+  - **A button on a record** (`orbit / button.record` on a table, `projects / button.record` on tasks): an optional label (the
+    flow's name otherwise) and subtitle (made from its steps otherwise). The run gets `trigger.record`, read fresh through the
+    connection, and `trigger.runBy` (id, name, email); it runs as the connection, as every Flow run does.
+  - **Orbit and Projects ask Flow** server to server (`POST api/apps/{orbit|projects}/v1/buttons`, `…/forms`, `…/run`): the
+    same signed assertion Flow sends them, the other way round. The app's API signs a two-minute JWT for its signed-in person
+    (`sub` their VantraId, `app_ws` the app workspace, `jti` a nonce, `name`) with the shared key (`FlowIntegration:SharedKey`
+    there, `Connectors:SharedKey` here, else `Jwt:Key`) and its own audience, `vantra-orbit-to-flow` or `vantra-projects-to-flow`,
+    in `X-App-Assertion`. Flow checks the signature, the audience, the expiry and lifetime, and spends the nonce once
+    (`flow.FiredKeys`); then that a live connection links that app workspace to a Flow workspace the person is a member of;
+    and, for a run, that the flow is on and is that app's button for that table (or tasks). The app checks first that the
+    person can see the record. No CORS: browsers never call these, and no Flow token reaches one.
+  - **Before db/014** the studio hides the new triggers (`GET api/w/{ws}/triggers/status`), switching such a flow on is
+    refused, forms answer 503 `not_ready`, the date scan waits and Requests are empty; existing flows are unaffected.
 
 - **Failure alerts.** "Email me when this flow fails" on a flow, and a workspace default (email a flow's creator)
   for flows that don't choose. At most one email per flow per hour: the first failure at once, the rest of the
@@ -233,7 +273,9 @@ aren't enforced (the server's run quota applies as before), Plan & billing reads
 `not_ready`, and the Stripe webhook answers 503 so Stripe keeps its events and retries. Until db/011 has run, folders,
 tags, owners, comments and the activity log answer 503 `not_ready` (the studio hides them) and nothing is logged;
 duplicate, export and import work. Until db/013 has run, SMTP mailboxes and the default sender answer 503 `not_ready` (the studio
-hides them), and every Send email step sends from Vantra Flow or the Microsoft 365 or Google account it names.
+hides them), and every Send email step sends from Vantra Flow or the Microsoft 365 or Google account it names. Until db/014 has
+run, forms, date triggers and buttons are hidden and can't be switched on, form pages answer 503 `not_ready` and nothing is
+scanned.
 
 ## Settings
 
@@ -265,8 +307,9 @@ Set these in App Service configuration, never in the repo:
 | `Workspaces:MaxOwned` | optional; how many workspaces one person may own (default 20) |
 | `OpenAI:ApiKey`, `OpenAI:Model` | the AI flow builder (both needed; a model with Structured Outputs) |
 | `Ai:MonthlyCap` | optional; a ceiling on AI drafts per workspace per month, over the plan's credits (0 turns drafting off) |
+| `Forms:Turnstile:SiteKey`, `Forms:Turnstile:SecretKey` | optional; Cloudflare Turnstile on public forms (the same values as Orbit's; off unless both are set) |
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, then `db/012_developer_api.sql`, then `db/013_mailboxes.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, then `db/012_developer_api.sql`, then `db/013_mailboxes.sql`, then `db/014_triggers.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

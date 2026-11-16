@@ -86,6 +86,48 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
             new JsonObject { ["type"] = "user", ["name"] = "Sample" });
     }
 
+    /// <summary>A table as REST API v1 describes it: <c>{ id, name, primaryFieldId, fields: [{ id, name, type }] }</c>.</summary>
+    public Task<JsonObject> TableAsync(string key, string tableId, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Get, $"/api/v1/tables/{Uri.EscapeDataString(tableId)}", null, key, null, ct);
+
+    /// <summary>One record as it is now (fields by name, with its link), for a button run.</summary>
+    public async Task<JsonObject> RecordAsync(string key, string tableId, string recordId, CancellationToken ct) =>
+        Record(await SendAsync<JsonObject>(HttpMethod.Get,
+            $"/api/v1/tables/{Uri.EscapeDataString(tableId)}/records/{Uri.EscapeDataString(recordId)}", null, key, null, ct));
+
+    /// <summary>The most records a date scan reads from one table (an older Orbit, without range filters, is paged this far).</summary>
+    public const int MaxDateScan = 2000;
+
+    /// <summary>
+    /// The records whose date field (an id) falls on a day in [from, to]: REST API v1's range filters
+    /// (<c>filter[field][gte]</c>, <c>[lte]</c>), sorted by that field and paged. An Orbit without range filters refuses
+    /// them (400): the table is then read in pages, sorted by the field, up to <see cref="MaxDateScan"/> records, and
+    /// the days checked here.
+    /// </summary>
+    public async Task<List<JsonObject>> DateRangeAsync(string key, string tableId, string fieldId, DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        var t = Uri.EscapeDataString(tableId);
+        var f = Uri.EscapeDataString(fieldId);
+        var range = $"{Uri.EscapeDataString($"filter[{fieldId}][gte]")}={from:yyyy-MM-dd}&{Uri.EscapeDataString($"filter[{fieldId}][lte]")}={to:yyyy-MM-dd}";
+        try { return await PagesAsync(key, $"/api/v1/tables/{t}/records?limit=100&sort={f}&{range}", ct); }
+        catch (AppRefusedException e) when (e.Status == 400) { /* an Orbit without range filters: read it all and check here */ }
+        var all = await PagesAsync(key, $"/api/v1/tables/{t}/records?limit=100&sort={f}", ct);
+        return all;
+    }
+
+    private async Task<List<JsonObject>> PagesAsync(string key, string path, CancellationToken ct)
+    {
+        var list = new List<JsonObject>();
+        string? cursor = null;
+        do
+        {
+            var page = await SendAsync<JsonObject>(HttpMethod.Get, cursor is null ? path : $"{path}&cursor={Uri.EscapeDataString(cursor)}", null, key, null, ct);
+            foreach (var r in (page["data"] as JsonArray ?? []).OfType<JsonObject>()) list.Add(Record(r));
+            cursor = Tokens.Text(page["nextCursor"]) is { Length: > 0 } c ? c : null;
+        } while (cursor is not null && list.Count < MaxDateScan);
+        return list;
+    }
+
     /// <summary>What an Orbit trigger hands its flow: the event, table, record, changes and who made it.</summary>
     public static JsonObject TriggerData(string kind, JsonNode? table, JsonNode? record, JsonNode? changes, JsonNode? actor) => new()
     {

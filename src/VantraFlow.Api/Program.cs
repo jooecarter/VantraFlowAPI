@@ -163,6 +163,19 @@ builder.Services.AddScoped<IStepActions, StepActions>();
 builder.Services.AddScoped<StepsRepository>();
 builder.Services.AddScoped<IApprovalGate, ApprovalGate>();
 builder.Services.AddScoped<SqlEngineStore>();
+// Forms, date triggers and buttons (db/014): the forms' links and pages, the date scan, and Orbit and Projects asking Flow
+// (their signed assertion, a nonce spent once in flow.FiredKeys).
+builder.Services.AddScoped<TriggersRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.FormLinks>();
+builder.Services.AddSingleton<VantraFlow.Api.Services.Triggers.FormGuard>(sp =>
+    new VantraFlow.Api.Services.Triggers.FormGuard(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHttpClientFactory>()));
+builder.Services.AddScoped(sp => new VantraFlow.Api.Services.Triggers.TriggerRuns(
+    sp.GetRequiredService<SqlEngineStore>(), sp.GetRequiredService<FlowLimits>(), sp.GetRequiredService<FlowSignal>().Poke));
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.DateTriggers>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.INonceStore, VantraFlow.Api.Services.Triggers.FiredKeyNonces>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.AppAssertion>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.IAppLinkStore, VantraFlow.Api.Services.Triggers.SqlAppLinkStore>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.AppLinks>();
 builder.Services.AddSingleton<FlowSignal>();
 builder.Services.AddHostedService<FlowWorker>();
 // Outside apps (Slack, Microsoft 365, Google): OAuth 2.0 per workspace, their actions and polling triggers (db/004).
@@ -237,6 +250,14 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(MailboxesController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+    // Form pages: 30 loads and answers a minute per address (each form also has its own hourly limits).
+    o.AddPolicy(FormsController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+    // Orbit and Projects asking for buttons, requests and runs: 600 a minute per calling address.
+    o.AddPolicy(AppLinksController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 600, Window = TimeSpan.FromMinutes(1) }));
     // Webhook triggers and app events: 300 a minute per address and path.
     o.AddPolicy(IncomingController.RateLimitPolicy, ctx => RateLimitPartition.GetFixedWindowLimiter(
         (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") + ctx.Request.Path,
