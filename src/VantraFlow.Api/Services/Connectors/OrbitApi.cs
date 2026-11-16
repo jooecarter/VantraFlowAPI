@@ -59,6 +59,23 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     public Task<JsonObject> ReportAsync(string key, string dashboardId, string range, bool makePdf, CancellationToken ct) =>
         SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/dashboards/{Uri.EscapeDataString(dashboardId)}", new { range, makePdf }, key, null, ct);
 
+    /// <summary>
+    /// The report schedules the person who connected Orbit can see (Orbit's own rights), for the Schedule page:
+    /// <c>{ available, reason, schedules: [{ id, title, dashboardName, summary, rangeLabel, recipientCount, enabled, runs, link, canChange, … }] }</c>.
+    /// A count of recipients, never their addresses. Before Orbit's db/074, <c>available: false</c>.
+    /// </summary>
+    public Task<JsonObject> ReportSchedulesAsync(string key, DateTime fromUtc, DateTime toUtc, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Get,
+            $"/api/v1/reports/schedules?from={Uri.EscapeDataString(Formatter.IsoUtc(fromUtc))}&to={Uri.EscapeDataString(Formatter.IsoUtc(toUtc))}", null, key, null, ct);
+
+    /// <summary>Pause or resume a report schedule in Orbit (as the person who connected it, with their rights there): <c>{ schedule }</c>.</summary>
+    public Task<JsonObject> SetReportEnabledAsync(string key, string id, bool enabled, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/enabled", new { enabled }, key, null, ct);
+
+    /// <summary>Send a report schedule's email to its recipients now (Orbit rate-limits it): <c>{ status }</c>.</summary>
+    public Task<JsonObject> SendReportNowAsync(string key, string id, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/send", new { }, key, null, ct);
+
     /// <summary>The connected workspace's sequences (those of tables the key can read): [{ id, name, status, tableId, tableName }].</summary>
     public Task<JsonArray> SequencesAsync(string key, CancellationToken ct) =>
         SendAsync<JsonArray>(HttpMethod.Get, "/api/v1/sequences", null, key, null, ct);

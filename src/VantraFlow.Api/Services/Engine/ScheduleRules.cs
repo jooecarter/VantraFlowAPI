@@ -100,6 +100,53 @@ public static class ScheduleRules
         return null;
     }
 
+    /// <summary>
+    /// Every time it fires in (<paramref name="fromUtc"/>, <paramref name="toUtc"/>] (UTC minutes), minute by minute through
+    /// <see cref="Matches"/> — the worker's own rule, so the Schedule page shows exactly the slots it will fire (a time a
+    /// clock change skips is skipped; one that happens twice fires twice, as the worker does). At most <paramref name="max"/>.
+    /// </summary>
+    public static List<DateTime> Occurrences(TriggerDef t, string? timeZone, DateTime fromUtc, DateTime toUtc, int max = 20_000)
+    {
+        var zone = Zone(timeZone);
+        var o = new List<DateTime>();
+        for (var m = Minute(fromUtc).AddMinutes(1); m <= toUtc && o.Count < max; m = m.AddMinutes(1))
+            if (Matches(t, TimeZoneInfo.ConvertTimeFromUtc(m, zone))) o.Add(m);
+        return o;
+    }
+
+    private static readonly string[] DayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    /// <summary>"Every weekday at 17:00", "Every Monday at 08:00", "Every 15 minutes", "Monthly on the 1st at 09:00".</summary>
+    public static string Describe(TriggerDef t)
+    {
+        var at = Time(t.Config["time"]) is { } tm ? $" at {tm:hh\\:mm}" : "";
+        switch (t.Event)
+        {
+            case "interval":
+                var every = Int(t.Config["every"]) ?? 0;
+                var hours = (t.Config["unit"]?.GetValue<string>() ?? "minutes") == "hours";
+                return every <= 1 ? (hours ? "Every hour" : "Every minute") : $"Every {every} {(hours ? "hours" : "minutes")}";
+            case "daily":
+                return $"Every day{at}";
+            case "weekly":
+                var days = DaysOf(t.Config["days"]);
+                var ordered = Days.Skip(1).Append(Days[0]).Where(days.Contains).ToList();
+                if (ordered.Count == 7) return $"Every day{at}";
+                if (ordered.Count == 5 && !days.Contains("sat") && !days.Contains("sun")) return $"Every weekday{at}";
+                if (ordered.Count == 2 && days.Contains("sat") && days.Contains("sun")) return $"Every weekend day{at}";
+                if (ordered.Count == 1) return $"Every {DayNames[Array.IndexOf(Days, ordered[0])]}{at}";
+                var names = ordered.Select(d => DayNames[Array.IndexOf(Days, d)][..3]).ToList();
+                return $"Every {string.Join(", ", names.Take(names.Count - 1))} and {names[^1]}{at}";
+            case "monthly":
+                var day = DayOfMonth(t.Config["day"]);
+                return day == 0 ? $"On the last day of the month{at}" : $"Monthly on the {Ordinal(day ?? 1)}{at}";
+            default:
+                return "On a schedule";
+        }
+    }
+
+    public static string Ordinal(int n) => n + (n % 100 is 11 or 12 or 13 ? "th" : (n % 10) switch { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" });
+
     public static string Key(DateTime slotUtc) => "s:" + slotUtc.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture);
 
     private static DateTime Minute(DateTime utc) => new(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, 0, DateTimeKind.Utc);

@@ -178,6 +178,25 @@ bash scripts/sqlcheck.sh
   `POST api/w/{ws}/apps/orbit/report-preview { dashboardId, range }` gives the panel today's numbers. **Before db/015**
   "Make a PDF" and Attachments are hidden, and a step that asks for a PDF fails with a plain message; the numbers work.
 
+- **Schedule page** (`Controllers/ScheduleController.cs`, `Services/Schedule/ScheduleBoard.cs`): everything set to run on its
+  own, across Flow, Orbit and Projects. No migration.
+  ```
+  GET  api/w/{ws}/schedule?from=&to=&zone=        → { items, paused, orbit: { connected, available, reason }, notices } (45 days at most)
+  POST api/w/{ws}/schedule/flows/{id}/run         → { runId }  a scheduled flow, now (as the developer API's Run now: the plan applies)
+  POST api/w/{ws}/schedule/reports/{id}/enabled   { enabled } → { schedule }   an Orbit report: pause or resume
+  POST api/w/{ws}/schedule/reports/{id}/send      → { status }  an Orbit report, sent to its recipients now (Orbit rate-limits it)
+  ```
+  Items: schedule flows' slots (`ScheduleRules.Occurrences`: the worker's own `Matches`, minute by minute, in the
+  workspace's zone), date flows' runs (the "Coming up" scan, counts only: `DateTriggers.UpcomingAsync`; Projects' overdue
+  tasks are date triggers too) and Orbit's report schedules (Orbit's `GET /api/v1/reports/schedules` with the connection's
+  key: what the person who connected Orbit can see there, a recipient count and never an address). Runs are grouped by day
+  in the viewer's zone (`zone`): a frequent schedule shows its first run each day and how many more. Paused schedule and date
+  flows, and paused reports, come back in `paused`; pausing or resuming a flow is its own switch (`flows/{id}/enable`).
+  Members of the workspace see what Flow shows them elsewhere; changing an Orbit report needs the connection's person's
+  rights in Orbit (Orbit checks). Orbit's answers and the date scans are cached for 60 seconds (15 when the app didn't
+  answer); if Orbit can't be reached the rest shows with a notice, and before Orbit's db/074 (or on an older Orbit) its
+  reports are left out (`orbit.reason: not_ready`). Nothing from a record, and no address, is logged or returned.
+
 - **Outside apps** (db/004): Slack, Microsoft 365 and Google, connected with OAuth 2.0 per Flow workspace (owners
   and admins). One shared callback, `{App:ApiBaseUrl}/api/oauth/{provider}/callback`; the consent's state is sealed and
   spent once, and the studio claims the result as the same person, so a link someone else started can't attach your

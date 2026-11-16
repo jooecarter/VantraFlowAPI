@@ -173,6 +173,10 @@ builder.Services.AddSingleton<VantraFlow.Api.Services.Triggers.FormGuard>(sp =>
 builder.Services.AddScoped(sp => new VantraFlow.Api.Services.Triggers.TriggerRuns(
     sp.GetRequiredService<SqlEngineStore>(), sp.GetRequiredService<FlowLimits>(), sp.GetRequiredService<FlowSignal>().Poke));
 builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.DateTriggers>();
+// The Schedule page: what runs on its own, across Flow, Orbit and Projects (a short cache for what it asks the apps).
+builder.Services.AddSingleton<VantraFlow.Api.Services.Schedule.ScheduleCache>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Schedule.IScheduleSources, VantraFlow.Api.Services.Schedule.ScheduleSources>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Schedule.ScheduleBoard>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.INonceStore, VantraFlow.Api.Services.Triggers.FiredKeyNonces>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.AppAssertion>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.IAppLinkStore, VantraFlow.Api.Services.Triggers.SqlAppLinkStore>();

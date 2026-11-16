@@ -6,6 +6,9 @@ using VantraFlow.Api.Services.Engine;
 
 namespace VantraFlow.Api.Services.Triggers;
 
+/// <summary>When a date flow will run in a window (one time per record) and its date field's name.</summary>
+public sealed record DateUpcoming(IReadOnlyList<DateTime> FireAts, string? FieldName);
+
 /// <summary>One record a date flow will run for next, for the builder's "Coming up".</summary>
 public sealed record ComingUpDto(string RecordId, string Title, string FireAt);
 
@@ -23,7 +26,7 @@ public sealed class DateTriggers(
 
     /// <summary>A source's records, read for a range of days, and how to read each.</summary>
     private sealed record Source(List<JsonObject> Rows, Func<JsonObject, string> Id, Func<JsonObject, JsonNode?> Value, Func<JsonObject, bool> Done,
-        Func<JsonObject, DateRules.DateValue, DateTime, JsonObject> Data, Func<JsonObject, string> Title);
+        Func<JsonObject, DateRules.DateValue, DateTime, JsonObject> Data, Func<JsonObject, string> Title, string? FieldName = null);
 
     public async Task RunDueAsync(string me, DateTime now, CancellationToken ct)
     {
@@ -88,6 +91,21 @@ public sealed class DateTriggers(
         return due.Take(take).Select(d => new ComingUpDto(d.RecordId, byId.TryGetValue(d.RecordId, out var r) ? source.Title(r) : d.RecordId, Formatter.IsoUtc(d.FireAt))).ToList();
     }
 
+    /// <summary>
+    /// When a date flow will run in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>] — the Schedule page's "N records due":
+    /// the fire times only (one per record), and the date field's name. Never a record's data.
+    /// </summary>
+    public async Task<DateUpcoming> UpcomingAsync(Guid workspaceId, FlowDefinition def, string timeZone, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    {
+        if (!DateRules.IsDateTrigger(def.Trigger) || toUtc <= fromUtc) return new([], null);
+        var spec = DateRules.Read(def.Trigger, timeZone);
+        if (def.Trigger.App == "orbit" && (spec.Field.Length == 0 || Tokens.Text(def.Trigger.Config["tableId"]).Length == 0)) return new([], null);
+        var source = await SourceAsync(workspaceId, def.Trigger, spec, DateRules.ValueRange(spec, fromUtc, toUtc), ct);
+        if (source is null) return new([], null);
+        var due = DateRules.Due(spec, def.Trigger.Event == DateRules.Overdue, source.Rows, source.Id, source.Value, source.Done, source.Data, fromUtc, toUtc);
+        return new(due.Select(d => d.FireAt).ToList(), source.FieldName);
+    }
+
     private async Task<Source?> SourceAsync(Guid workspaceId, TriggerDef t, DateSpec spec, (DateOnly From, DateOnly To) range, CancellationToken ct)
     {
         if (t.App == "orbit")
@@ -115,7 +133,7 @@ public sealed class DateTriggers(
                         ["date"] = new JsonObject { ["field"] = name, ["value"] = v.Key },
                         ["scheduledFor"] = Formatter.IsoUtc(at),
                     },
-                    r => primaryName is not null && Tokens.Text(r["fields"]?[primaryName]) is { Length: > 0 } title ? title : Tokens.Text(r["id"]));
+                    r => primaryName is not null && Tokens.Text(r["fields"]?[primaryName]) is { Length: > 0 } title ? title : Tokens.Text(r["id"]), name);
             });
         }
         if (t.App != "projects") return null;
@@ -132,7 +150,7 @@ public sealed class DateTriggers(
                     ["link"] = r["url"]?.DeepClone(),
                     ["scheduledFor"] = Formatter.IsoUtc(at),
                 },
-                r => Tokens.Text(r["name"]) is { Length: > 0 } n ? n : Tokens.Text(r["id"]));
+                r => Tokens.Text(r["name"]) is { Length: > 0 } n ? n : Tokens.Text(r["id"]), "Due date");
         });
     }
 }
