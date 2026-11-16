@@ -32,7 +32,9 @@ public sealed class ReportStepTests
         Assert.Equal("£42,300", (string?)o["revenue_won_text"]);
         Assert.Equal(11.9, o["revenue_won_change"]!.GetValue<double>());
         Assert.Equal("+12%", (string?)o["revenue_won_change_text"]);
-        Assert.Null(o["deals_won_change"]);
+        // No meaningful change (nothing before to compare with): no change outputs at all.
+        Assert.False(o.ContainsKey("deals_won_change"));
+        Assert.False(o.ContainsKey("deals_won_change_text"));
         Assert.Equal("Sales overview", (string?)o["dashboard"]);
         Assert.Equal("https://orbit.example.com/dashboards/dsh1", (string?)o["link"]);
         // The PDF's bytes never go into the output (the step keeps them as a run file).

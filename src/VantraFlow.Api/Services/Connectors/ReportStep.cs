@@ -8,7 +8,7 @@ namespace VantraFlow.Api.Services.Connectors;
 /// Vantra Orbit's "Get a report" step (<c>orbit / report.get</c>): config { dashboardId, range, makePdf }. Orbit works the
 /// dashboard out as the person who connected it (its own numbers, only what they can see). Output, for later steps and
 /// Paths: each number widget by its title as a slug — <c>revenue_won</c> (the number), <c>revenue_won_text</c> ("£42,300"),
-/// <c>revenue_won_change</c> (per cent, or empty), <c>revenue_won_change_text</c> ("+12%") — plus <c>dashboard</c>,
+/// <c>revenue_won_change</c> (per cent) and <c>revenue_won_change_text</c> ("+12%") — only when there's a meaningful change — plus <c>dashboard</c>,
 /// <c>range</c>, <c>link</c>, <c>numbers</c> (all of it) and, with makePdf, <c>pdf</c> ({ kind: file, id, name }: a file the
 /// Send email step attaches; db/015) and <c>pdf_size</c>.
 /// </summary>
@@ -33,8 +33,12 @@ public static class ReportStep
                 if (n is not JsonObject x) continue;
                 o[key] = x["value"]?.DeepClone();
                 o[$"{key}_text"] = Tokens.Text(x["text"]);
-                o[$"{key}_change"] = x["change"]?.DeepClone();
-                o[$"{key}_change_text"] = Tokens.Text(x["changeText"]);
+                // A change only when Orbit has a meaningful one (a "before" to compare with).
+                if (x["change"] is JsonValue change && Tokens.Text(x["changeText"]) is { Length: > 0 } changeText)
+                {
+                    o[$"{key}_change"] = change.DeepClone();
+                    o[$"{key}_change_text"] = changeText;
+                }
             }
             o["numbers"] = numbers.DeepClone();
         }
