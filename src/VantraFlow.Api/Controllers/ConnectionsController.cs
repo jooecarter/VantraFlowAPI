@@ -22,7 +22,7 @@ namespace VantraFlow.Api.Controllers;
 /// (<c>amr: otp</c>): 403 <c>two_factor_required</c> otherwise. The assertion says so too, and the app checks again.
 /// </summary>
 public sealed class ConnectionsController(WorkspacesRepository workspaces, ConnectionsRepository repo, AppConnectors apps, Connections connections,
-    TwoFactorSignIn twoFactor, VantraFlow.Api.Shared.ISharedDirectory shared, ILogger<ConnectionsController> log)
+    TwoFactorSignIn twoFactor, VantraFlow.Api.Shared.ISharedDirectory shared, ILogger<ConnectionsController> log, RunFilesRepository files)
     : FlowControllerBase(workspaces)
 {
     /// <summary>Null when this session may connect apps; otherwise why not (it didn't pass the person's two-step sign-in).</summary>
@@ -114,10 +114,39 @@ public sealed class ConnectionsController(WorkspacesRepository workspaces, Conne
         var (_, refusal) = await MemberAsync(workspaceId);
         if (refusal is not null) return refusal;
         if (apps.For(app) is null) return NotFound(new { error = "Vantra Flow doesn't connect to that app." });
-        try { return Ok(await connections.CallAsync(workspaceId, app, (api, key) => api.SchemaAsync(key, ct))); }
+        try
+        {
+            var schema = await connections.CallAsync(workspaceId, app, (api, key) => api.SchemaAsync(key, ct));
+            // db/015: whether "Make a PDF" and attachments can be offered.
+            if (app == "orbit") schema["filesReady"] = await files.ReadyAsync();
+            return Ok(schema);
+        }
         catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
         catch (AppRevokedException e) { return StatusCode(409, new { error = e.Message, code = "connection_revoked" }); }
         catch (AppRefusedException e) { return StatusCode(e.Code == "not_connected" ? 409 : 400, new { error = e.Message, code = e.Code }); }
+    }
+
+    /// <summary>
+    /// "Get a report"'s preview: the report's outputs with today's numbers (no PDF), for the panel's "Use in later steps".
+    /// Runs as the connection, as the step does.
+    /// </summary>
+    [HttpPost("api/w/{workspaceId:guid}/apps/orbit/report-preview")]
+    public async Task<IActionResult> ReportPreview(Guid workspaceId, [FromBody] System.Text.Json.Nodes.JsonObject? body, CancellationToken ct)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        var dashboardId = Services.Engine.Tokens.Text(body?["dashboardId"]).Trim();
+        var range = Services.Engine.Tokens.Text(body?["range"]).Trim();
+        if (dashboardId.Length is 0 or > 64) return BadRequest(new { error = "Choose the report." });
+        if (!ReportStep.Ranges.Contains(range)) range = "lastWeek";
+        try
+        {
+            var report = await connections.CallAsync(workspaceId, "orbit", (api, key) => ((OrbitApi)api).ReportAsync(key, dashboardId, range, false, ct));
+            return Ok(ReportStep.Outputs(report));
+        }
+        catch (AppUnavailableException e) { return StatusCode(502, new { error = e.Message, code = "app_unavailable" }); }
+        catch (AppRevokedException e) { return StatusCode(409, new { error = e.Message, code = "connection_revoked" }); }
+        catch (AppRefusedException e) { return StatusCode(e.Code == "not_connected" ? 409 : e.Status == 404 ? 404 : 400, new { error = e.Message, code = e.Code }); }
     }
 
     private static string AppName(string app) => app == "orbit" ? "Vantra Orbit" : "Vantra Projects";

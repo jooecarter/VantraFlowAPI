@@ -166,6 +166,7 @@ builder.Services.AddScoped<SqlEngineStore>();
 // Forms, date triggers and buttons (db/014): the forms' links and pages, the date scan, and Orbit and Projects asking Flow
 // (their signed assertion, a nonce spent once in flow.FiredKeys).
 builder.Services.AddScoped<TriggersRepository>();
+builder.Services.AddScoped<RunFilesRepository>(); // db/015: files steps make (a report's PDF) for later steps
 builder.Services.AddScoped<VantraFlow.Api.Services.Triggers.FormLinks>();
 builder.Services.AddSingleton<VantraFlow.Api.Services.Triggers.FormGuard>(sp =>
     new VantraFlow.Api.Services.Triggers.FormGuard(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHttpClientFactory>()));

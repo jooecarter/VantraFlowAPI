@@ -79,9 +79,11 @@ public sealed class FakeRoutes : IMailRoutes
     public SmtpResult SmtpAnswers = SmtpResult.Done;
 
     public Task<bool> SendVantraAsync(string replyTo, string fromName, string to, string subject, string html) { Sent.Add($"vantra:{to}"); return Task.FromResult(true); }
-    public Task SendAccountAsync(Guid ws, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct)
+    public readonly List<MailFile> Files = [];
+    public Task SendAccountAsync(Guid ws, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct, IReadOnlyList<MailFile>? files = null)
     {
         if (AccountThrows is not null) throw AccountThrows;
+        Files.AddRange(files ?? []);
         Sent.Add($"{provider}:{to}:{replyTo}");
         return Task.CompletedTask;
     }

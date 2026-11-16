@@ -237,6 +237,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) { log.LogInformation(ex, "Webhook deliveries prune failed"); }
             try { var t = sp.GetRequiredService<TriggersRepository>(); if (await t.ReadyAsync()) await t.PruneAsync(now); }
             catch (Exception ex) { log.LogInformation(ex, "Form and date ledger prune failed"); }
+            try { var f = sp.GetRequiredService<RunFilesRepository>(); if (await f.ReadyAsync()) await f.PruneAsync(now); }
+            catch (Exception ex) { log.LogInformation(ex, "Run files prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;

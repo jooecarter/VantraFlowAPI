@@ -94,11 +94,11 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
     /// the provider answered (Gmail: the message's id and thread); throws the app exceptions the engine knows.
     /// </summary>
     public async Task<JsonNode?> SendMailAsync(Guid ws, string provider, IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html, string? replyTo,
-        CancellationToken ct)
+        CancellationToken ct, IReadOnlyList<Mail.MailFile>? files = null)
     {
         if (provider == "google")
         {
-            var raw = Mime(to, cc, subject, html, replyTo);
+            var raw = Mime(to, cc, subject, html, replyTo, files);
             return await connections.CallAsync(ws, "google", s => s.Provider.SendAsync(HttpMethod.Post,
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", s.Token, new JsonObject { ["raw"] = raw }, ct), ct);
         }
@@ -110,6 +110,11 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
         };
         if (cc.Count > 0) message["ccRecipients"] = Addresses(cc);
         if (replyTo is { Length: > 0 }) message["replyTo"] = Addresses([replyTo]);
+        if (files is { Count: > 0 })
+            message["attachments"] = new JsonArray(files.Select(f => (JsonNode)new JsonObject
+            {
+                ["@odata.type"] = "#microsoft.graph.fileAttachment", ["name"] = f.Name, ["contentType"] = f.ContentType, ["contentBytes"] = Convert.ToBase64String(f.Bytes),
+            }).ToArray());
         return await connections.CallAsync(ws, "microsoft", s => s.Provider.SendAsync(HttpMethod.Post, MicrosoftProvider.Graph + "me/sendMail", s.Token,
             new JsonObject { ["message"] = message, ["saveToSentItems"] = true }, ct), ct);
     }
@@ -179,16 +184,40 @@ public sealed partial class OAuthActions(OAuthConnections connections, OAuthProv
     }
 
     /// <summary>An email as Gmail takes it: RFC 5322, base64url. Headers can't carry a line break, so a token can't add one.</summary>
-    public static string Mime(IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html, string? replyTo = null)
+    public static string Mime(IReadOnlyList<string> to, IReadOnlyList<string> cc, string subject, string html, string? replyTo = null,
+        IReadOnlyList<Mail.MailFile>? files = null)
     {
         var sb = new StringBuilder();
         sb.Append("To: ").Append(string.Join(", ", to)).Append("\r\n");
         if (cc.Count > 0) sb.Append("Cc: ").Append(string.Join(", ", cc)).Append("\r\n");
         if (replyTo is { Length: > 0 } && OneLine(replyTo) is var reply && !reply.Contains(' ')) sb.Append("Reply-To: ").Append(reply).Append("\r\n");
         sb.Append("Subject: =?UTF-8?B?").Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(OneLine(subject)))).Append("?=\r\n");
-        sb.Append("MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
-        var body = Convert.ToBase64String(Encoding.UTF8.GetBytes(html));
-        for (var i = 0; i < body.Length; i += 76) sb.Append(body, i, Math.Min(76, body.Length - i)).Append("\r\n");
+        sb.Append("MIME-Version: 1.0\r\n");
+        static void Base64Lines(StringBuilder sb, byte[] bytes)
+        {
+            var b = Convert.ToBase64String(bytes);
+            for (var i = 0; i < b.Length; i += 76) sb.Append(b, i, Math.Min(76, b.Length - i)).Append("\r\n");
+        }
+        if (files is not { Count: > 0 })
+        {
+            sb.Append("Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
+            Base64Lines(sb, Encoding.UTF8.GetBytes(html));
+        }
+        else
+        {
+            var boundary = "vf_" + Guid.NewGuid().ToString("N");
+            sb.Append("Content-Type: multipart/mixed; boundary=\"").Append(boundary).Append("\"\r\n\r\n");
+            sb.Append("--").Append(boundary).Append("\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n");
+            Base64Lines(sb, Encoding.UTF8.GetBytes(html));
+            foreach (var f in files)
+            {
+                var name = "=?UTF-8?B?" + Convert.ToBase64String(Encoding.UTF8.GetBytes(OneLine(f.Name))) + "?=";
+                sb.Append("--").Append(boundary).Append("\r\nContent-Type: ").Append(OneLine(f.ContentType)).Append("; name=\"").Append(name).Append("\"\r\n");
+                sb.Append("Content-Disposition: attachment; filename=\"").Append(name).Append("\"\r\nContent-Transfer-Encoding: base64\r\n\r\n");
+                Base64Lines(sb, f.Bytes);
+            }
+            sb.Append("--").Append(boundary).Append("--\r\n");
+        }
         return System.Buffers.Text.Base64Url.EncodeToString(Encoding.UTF8.GetBytes(sb.ToString()));
     }
 

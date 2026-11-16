@@ -166,6 +166,18 @@ bash scripts/sqlcheck.sh
 - **Actions.** Orbit: create, update and find records, add a comment to a record, and add someone to an email sequence. Projects: create projects
   and tasks, find tasks, update a task (status, assignee, due date) and add a comment.
 
+- **Vantra Orbit reports** ("Get a report", `orbit / report.get`; `Services/Connectors/ReportStep.cs`): config { dashboardId,
+  range: lastWeek | last7 | monthToDate | lastMonth, makePdf }. Orbit works the dashboard out as the person who connected it
+  (its REST API v1 `reports` route: Orbit's own numbers, only what they can see). Each number widget is an output named by
+  its title as a slug (`revenue_won`, `revenue_won_text`, `revenue_won_change`, `revenue_won_change_text`), usable in later
+  steps and in Paths conditions; plus `dashboard`, `range`, `link` and, with makePdf, `pdf`: a **file output**. Files a step
+  makes are kept in `flow.RunFiles` (db/015; 10 MB each, 7 days, only for the run that made them, pruned hourly). The
+  **Send email** step attaches them (`attachments`: `{{steps.<id>.pdf}}`, 15 MB in all) from Vantra Flow's mailbox, a
+  Microsoft 365 or Google account, or an SMTP mailbox. Teams and Slack get the link. The builder's report picker lists
+  the connected workspace's dashboards (`…/apps/orbit/schema` → `dashboards`, `filesReady`), and
+  `POST api/w/{ws}/apps/orbit/report-preview { dashboardId, range }` gives the panel today's numbers. **Before db/015**
+  "Make a PDF" and Attachments are hidden, and a step that asks for a PDF fails with a plain message; the numbers work.
+
 - **Outside apps** (db/004): Slack, Microsoft 365 and Google, connected with OAuth 2.0 per Flow workspace (owners
   and admins). One shared callback, `{App:ApiBaseUrl}/api/oauth/{provider}/callback`; the consent's state is sealed and
   spent once, and the studio claims the result as the same person, so a link someone else started can't attach your

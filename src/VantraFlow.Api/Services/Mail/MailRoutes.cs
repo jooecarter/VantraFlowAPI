@@ -18,8 +18,9 @@ public sealed class MailRoutes(EmailService email, OAuth.OAuthActions oauth, ISm
     public Task<bool> SendVantraAsync(string replyTo, string fromName, string to, string subject, string html) =>
         email.SendAsync(replyTo, fromName, to, "", subject, html);
 
-    public Task SendAccountAsync(Guid workspaceId, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct) =>
-        oauth.SendMailAsync(workspaceId, provider, [to], [], subject, html, replyTo, ct);
+    public Task SendAccountAsync(Guid workspaceId, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct,
+        IReadOnlyList<MailFile>? files = null) =>
+        oauth.SendMailAsync(workspaceId, provider, [to], [], subject, html, replyTo, ct, files);
 
     public Task<SmtpResult> SendSmtpAsync(SmtpRules.Settings settings, OutgoingMail mail, CancellationToken ct) => smtp.SendAsync(settings, mail, ct);
 }
