@@ -197,6 +197,23 @@ bash scripts/sqlcheck.sh
   answer); if Orbit can't be reached the rest shows with a notice, and before Orbit's db/074 (or on an older Orbit) its
   reports are left out (`orbit.reason: not_ready`). Nothing from a record, and no address, is logged or returned.
 
+  **Editing from the page** (`Services/Schedule/ScheduleEdit.cs`):
+  ```
+  PUT  api/w/{ws}/flows/{id}/schedule             { version, trigger: { event, config } } → { flow, errors }
+  POST api/w/{ws}/flows/{id}/coming-up            { definition, days: 3 } → { days: [{ at, count, more }] }  the next days a date flow runs, with records
+  GET  api/w/{ws}/schedule/reports/{id}           → { schedule, details, cards, limits, members }  an Orbit report to edit
+  PUT  api/w/{ws}/schedule/reports/{id}           { version, title, …, recipients: { members, keep, add } } → the same, as saved
+  ```
+  A flow's panel changes only when it runs: a schedule's cadence (every day, on these days, every hour, every month on day
+  N), days and time; a date trigger's amount, days or weeks, before / on / after, field and time; an overdue trigger's time.
+  The rest of the flow is kept, and it's saved through the builder's own `SaveAsync` (the same checks; a version kept with
+  the note "Changed on the Schedule page"). Anyone who can edit flows may. It names the version it read: a flow saved
+  meanwhile answers 409 `changed`. A trigger the panel can't show (every 15 minutes, every 6 hours, the last day of the
+  month, minutes before a date) answers 409 `unsupported`, and the board marks it `editable: false`.
+  An Orbit report is changed in Orbit (`PUT /api/v1/reports/schedules/{id}`), which checks the connection's person's rights,
+  the people and the 20 limit. Outside addresses only ever come back masked (`f•••@example.com`) with an id; the panel adds
+  new ones as typed. Only the fields the panel shows go each way.
+
 - **Outside apps** (db/004): Slack, Microsoft 365 and Google, connected with OAuth 2.0 per Flow workspace (owners
   and admins). One shared callback, `{App:ApiBaseUrl}/api/oauth/{provider}/callback`; the consent's state is sealed and
   spent once, and the studio claims the result as the same person, so a link someone else started can't attach your

@@ -151,7 +151,7 @@ public sealed class ScheduleBoard(IScheduleSources sources, ScheduleCache cache)
                 items.Add(new JsonObject
                 {
                     ["kind"] = "flow", ["id"] = f.Id, ["name"] = f.Name, ["summary"] = ScheduleRules.Describe(t), ["apps"] = Apps(def),
-                    ["sends"] = Sends(def), ["event"] = t.Event, ["runs"] = ByDay(runs, zone),
+                    ["sends"] = Sends(def), ["event"] = t.Event, ["editable"] = ScheduleEdit.Supported(t), ["runs"] = ByDay(runs, zone),
                 });
                 continue;
             }
@@ -166,7 +166,7 @@ public sealed class ScheduleBoard(IScheduleSources sources, ScheduleCache cache)
             var item = new JsonObject
             {
                 ["kind"] = "date", ["id"] = f.Id, ["name"] = f.Name, ["app"] = t.App, ["summary"] = DateSummary(t, upcoming.FieldName),
-                ["noun"] = t.App == "projects" ? "task" : "record", ["apps"] = Apps(def),
+                ["noun"] = t.App == "projects" ? "task" : "record", ["apps"] = Apps(def), ["editable"] = ScheduleEdit.Supported(t),
                 ["runs"] = ByDay(upcoming.FireAts.Where(x => x <= toUtc), zone),
             };
             if (error is not null) item["error"] = error;

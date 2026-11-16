@@ -26,6 +26,7 @@ namespace VantraFlow.Api.Controllers;
 /// GET    api/w/{ws}/flows/{id}/versions           → its saved versions, newest first (db/003; 503 before)
 /// GET    api/w/{ws}/flows/{id}/versions/{v}       → one, with its definition
 /// POST   api/w/{ws}/flows/{id}/versions/{v}/restore → saved again as the newest version → { flow, errors }
+/// PUT    api/w/{ws}/flows/{id}/schedule           { version, trigger: { event, config } } → { flow, errors } (the Schedule page's panel: when it runs, only)
 /// </code>
 /// Every save (and the first, on create) keeps a version once db/003 has run.
 /// </summary>
@@ -97,6 +98,26 @@ public sealed class FlowsController(
         return await SaveAsync(f, Name(body.Name) ?? f.Name, body.Description is null ? f.Description : Desc(body.Description), def, null, ct);
     }
 
+    public sealed record ScheduleBody(int? Version, JsonNode? Trigger);
+
+    /// <summary>
+    /// The Schedule page's panel: when a schedule or date flow runs, and nothing else (<see cref="Services.Schedule.ScheduleEdit"/>),
+    /// saved through the same path as the builder — its checks, and a version kept with a note. Refused when someone saved the flow
+    /// since the panel read it, or when the panel can't show its trigger (edit it in the flow).
+    /// </summary>
+    [HttpPut("api/w/{workspaceId:guid}/flows/{id}/schedule")]
+    public async Task<IActionResult> SaveSchedule(Guid workspaceId, string id, [FromBody] ScheduleBody body, CancellationToken ct)
+    {
+        var (role, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!Services.Team.TeamRules.CanEdit(role)) return StatusCode(403, new { error = "You can't change flows in this workspace.", code = "forbidden" });
+        if (await flows.GetAsync(workspaceId, id) is not { } f) return NoFlow();
+        if (FlowDefinition.Parse(f.Definition) is not { } def) return BadRequest(new { error = "That flow couldn't be read." });
+        var change = Services.Schedule.ScheduleEdit.Apply(def, body.Trigger as JsonObject, body.Version, f.Version);
+        if (change.Definition is not { } next) return StatusCode(change.Status, new { error = change.Error, code = change.Code });
+        return await SaveAsync(f, f.Name, f.Description, next, Services.Schedule.ScheduleEdit.Note, ct);
+    }
+
     /// <summary>
     /// Saves a definition (an edit, or a restored version): refused while the flow is on and has problems; the apps'
     /// webhooks kept in step with its trigger; a version kept. → <c>{ flow, errors }</c>.
@@ -137,9 +158,14 @@ public sealed class FlowsController(
     private async Task KeepVersionAsync(FlowRow saved, string? note)
     {
         if (!await schema.VersionsReadyAsync()) return;
+        await versions.InsertAsync(VersionOf(saved, note, Sub, DisplayName, DateTime.UtcNow));
+    }
+
+    /// <summary>The version a save keeps: the flow as saved, its step count, and the note (a restore's, or the Schedule page's).</summary>
+    internal static FlowVersionRow VersionOf(FlowRow saved, string? note, string by, string? byName, DateTime at)
+    {
         var def = FlowDefinition.Parse(saved.Definition) ?? new FlowDefinition();
-        await versions.InsertAsync(new FlowVersionRow(saved.WorkspaceId, saved.Id, saved.Version, saved.Name, saved.Definition, def.AllSteps().Count(), note,
-            Sub, DisplayName, DateTime.UtcNow));
+        return new FlowVersionRow(saved.WorkspaceId, saved.Id, saved.Version, saved.Name, saved.Definition, def.AllSteps().Count(), note, by, byName, at);
     }
 
     [HttpGet("api/w/{workspaceId:guid}/flows/{id}/versions")]
