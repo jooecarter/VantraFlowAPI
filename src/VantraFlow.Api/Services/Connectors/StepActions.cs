@@ -17,7 +17,7 @@ namespace VantraFlow.Api.Services.Connectors;
 /// </summary>
 public sealed partial class StepActions(Connections connections, EmailService email, EngineRepository engine, IHttpClientFactory http, FlowLimits limits,
     FlowsRepository flows, FlowSignal signal, OAuth.OAuthActions oauth, StepsRepository steps, FlowSecrets secrets, FlowSchema schema, Ai.AiSteps ai,
-    Mail.Senders senders)
+    Mail.Senders senders, RunFilesRepository files)
     : IStepActions
 {
     public const string HttpClientName = "flow-http";
@@ -35,6 +35,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
         {
             return step.App switch
             {
+                "orbit" when step.Action == ReportStep.Action => await ReportAsync(call, ct),
                 "orbit" or "projects" => StepOutcome.Done(await connections.CallAsync(call.WorkspaceId, step.App,
                     (api, key) => api.ActAsync(key, step.Action ?? "", call.Input, $"flow:{call.RunId}:{step.Id}", ct))),
                 "email" => await EmailAsync(call, ct),
@@ -101,6 +102,8 @@ public sealed partial class StepActions(Connections connections, EmailService em
         var body = Tokens.Text(call.Input["body"]);
         var replyTo = Tokens.Text(call.Input["replyTo"]).Trim();
         var named = Tokens.Text(call.Input["fromName"]).Trim();
+        var (attach, attachError) = await AttachmentsAsync(call);
+        if (attachError is not null) return StepOutcome.Fail(attachError);
         var sent = new JsonArray();
         if (!who.Own)
         {
@@ -112,7 +115,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
                 ct.ThrowIfCancellationRequested();
                 if (!await engine.CountEmailAsync(call.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
                     return StepOutcome.Fail($"This workspace has sent its {limits.EmailsPerDay} emails for today.");
-                if (await email.SendWithReasonAsync(replyTo, fromName, address, "", subject, html) is { Ok: false } failed)
+                if (await email.SendWithReasonAsync(replyTo, fromName, address, "", subject, html, attach) is { Ok: false } failed)
                 {
                     // Microsoft's answer in plain words: a wrong secret or a missing mailbox won't mend on a retry.
                     var why = failed.Reason is { Length: > 0 } reason ? $" {reason}" : "";
@@ -137,7 +140,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
             if (!await engine.CountEmailAsync(call.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
                 return StepOutcome.Fail($"This workspace has sent its {limits.EmailsPerDay} emails for today.");
             var result = await senders.SendAsync(call.WorkspaceId, from, new Mail.OutgoingMail(address, OAuth.OAuthActions.OneLine(subject), own, replyTo.Length > 0 ? replyTo : null,
-                named.Length > 0 ? named : null), ct);
+                named.Length > 0 ? named : null, attach), ct);
             if (!result.Ok)
                 return sent.Count == 0
                     ? StepOutcome.Fail(result.Error!, retryable: result.Retryable)

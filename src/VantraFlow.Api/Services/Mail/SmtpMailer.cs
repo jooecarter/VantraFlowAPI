@@ -15,7 +15,10 @@ public sealed record SmtpResult(bool Ok, string? Error = null, bool Retryable = 
 }
 
 /// <summary>One email to one person, as a Send email step sends it from an own mailbox.</summary>
-public sealed record OutgoingMail(string To, string Subject, string Html, string? ReplyTo, string? FromName);
+public sealed record OutgoingMail(string To, string Subject, string Html, string? ReplyTo, string? FromName, IReadOnlyList<MailFile>? Files = null);
+
+/// <summary>A file an email carries: an earlier step's file output (a report's PDF), read back from the run's files (db/015).</summary>
+public sealed record MailFile(string Name, string ContentType, byte[] Bytes);
 
 /// <summary>Talks to an SMTP mailbox (<see cref="SmtpMailer"/>; a fake in tests).</summary>
 public interface ISmtpMailer
@@ -126,7 +129,9 @@ public sealed partial class SmtpMailer(ILogger<SmtpMailer> log) : ISmtpMailer
             message.ReplyTo.Add(r);
         }
         message.Subject = m.Subject;
-        message.Body = new BodyBuilder { HtmlBody = m.Html }.ToMessageBody();
+        var body = new BodyBuilder { HtmlBody = m.Html };
+        foreach (var f in m.Files ?? []) body.Attachments.Add(f.Name, f.Bytes, MimeKit.ContentType.Parse(f.ContentType));
+        message.Body = body.ToMessageBody();
         return message;
     }
 

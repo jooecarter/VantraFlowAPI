@@ -57,12 +57,13 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
         (await SendWithReasonAsync(fromEmail, fromName, toEmail, toName, subject, htmlBody)).Ok;
 
     /// <summary><see cref="SendAsync"/>, with why it didn't send (for a run's step): Microsoft's answer in plain words.</summary>
-    public async Task<EmailSendResult> SendWithReasonAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
+    public async Task<EmailSendResult> SendWithReasonAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody,
+        IReadOnlyList<Mail.MailFile>? files = null)
     {
         if (Graph.IsUsable)
-            return await TrySendGraphAsync(fromEmail, fromName, toEmail, toName, subject, htmlBody);
+            return await TrySendGraphAsync(fromEmail, fromName, toEmail, toName, subject, htmlBody, files);
         if (Global.IsUsable)
-            return await TrySendAsync(Global, fromEmail, fromName, toEmail, toName, subject, htmlBody)
+            return await TrySendAsync(Global, fromEmail, fromName, toEmail, toName, subject, htmlBody, files)
                 ? EmailSendResult.Sent
                 : new EmailSendResult(false, "Vantra Flow's mail server didn't accept it.", true);
         return new EmailSendResult(false, "Email isn't set up on this server yet.");
@@ -72,7 +73,8 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
     /// Send one HTML email using <paramref name="smtp"/>, as <paramref name="fromEmail"/>
     /// (or the settings' forced From, with the author in Reply-To). Returns whether it sent.
     /// </summary>
-    public async Task<bool> TrySendAsync(SmtpSettings smtp, string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
+    public async Task<bool> TrySendAsync(SmtpSettings smtp, string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody,
+        IReadOnlyList<Mail.MailFile>? files = null)
     {
         if (!smtp.IsUsable) return false;
         var sender = !string.IsNullOrWhiteSpace(smtp.From) ? smtp.From! : fromEmail;
@@ -89,6 +91,7 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
             };
             if (!string.IsNullOrWhiteSpace(fromEmail)) msg.ReplyToList.Add(new MailAddress(fromEmail, fromName));
             msg.To.Add(new MailAddress(toEmail, string.IsNullOrWhiteSpace(toName) ? toEmail : toName));
+            foreach (var f in files ?? []) msg.Attachments.Add(new Attachment(new MemoryStream(f.Bytes), f.Name, f.ContentType));
 
             using var client = new SmtpClient(smtp.Host, smtp.Port)
             {
@@ -113,7 +116,8 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
     /// author, so replies reach them directly). Uses app-only client-credentials
     /// auth — no user is signed in. Returns whether Graph accepted it.
     /// </summary>
-    public async Task<EmailSendResult> TrySendGraphAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody)
+    public async Task<EmailSendResult> TrySendGraphAsync(string fromEmail, string fromName, string toEmail, string toName, string subject, string htmlBody,
+        IReadOnlyList<Mail.MailFile>? files = null)
     {
         var g = Graph;
         if (!g.IsUsable) return new EmailSendResult(false, "Email isn't set up on this server yet.");
@@ -133,7 +137,8 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
                     new[] { new GraphRecipient(new GraphAddress(toEmail, string.IsNullOrWhiteSpace(toName) ? toEmail : toName)) },
                     string.IsNullOrWhiteSpace(fromEmail)
                         ? null
-                        : new[] { new GraphRecipient(new GraphAddress(fromEmail, senderName)) }),
+                        : new[] { new GraphRecipient(new GraphAddress(fromEmail, senderName)) },
+                    files is { Count: > 0 } ? files.Select(f => new GraphAttachment(f.Name, f.ContentType, Convert.ToBase64String(f.Bytes))).ToArray() : null),
                 SaveToSentItems: true);
 
             var http = httpFactory.CreateClient();
@@ -219,7 +224,12 @@ public sealed class EmailService(IConfiguration config, IHttpClientFactory httpF
         GraphBody Body,
         GraphRecipient From,
         GraphRecipient[] ToRecipients,
-        GraphRecipient[]? ReplyTo);
+        GraphRecipient[]? ReplyTo,
+        GraphAttachment[]? Attachments = null);
+    private sealed record GraphAttachment(string Name, string ContentType, string ContentBytes)
+    {
+        [JsonPropertyName("@odata.type")] public string OdataType => "#microsoft.graph.fileAttachment";
+    }
     private sealed record GraphBody(string ContentType, string Content);
     private sealed record GraphRecipient(GraphAddress EmailAddress);
     private sealed record GraphAddress(string Address, string Name);

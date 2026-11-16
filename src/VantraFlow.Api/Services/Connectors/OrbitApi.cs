@@ -40,8 +40,24 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         try { o["sequences"] = await SequencesAsync(key, ct); }
         catch (AppUnavailableException e) { o["sequences"] = new JsonArray(); o["sequencesOff"] = e.Message; }
         catch (AppRefusedException e) { o["sequences"] = new JsonArray(); o["sequencesOff"] = e.Message; }
+        // Dashboards for "Get a report" (an Orbit from before reports answers 404: none).
+        try { o["dashboards"] = await DashboardsAsync(key, ct); }
+        catch (AppUnavailableException) { o["dashboards"] = new JsonArray(); }
+        catch (AppRefusedException) { o["dashboards"] = new JsonArray(); }
         return o;
     }
+
+    /// <summary>The connected workspace's dashboards the key's creator sees: [{ id, name, outputs: [{ key, title }] }].</summary>
+    public Task<JsonArray> DashboardsAsync(string key, CancellationToken ct) =>
+        SendAsync<JsonArray>(HttpMethod.Get, "/api/v1/reports/dashboards", null, key, null, ct);
+
+    /// <summary>
+    /// "Get a report": the dashboard worked out as the person who connected Orbit (Orbit's own numbers, what they can see), for a
+    /// range: { dashboard, range, link, numbers: { key: { title, value, text, change, changeText, previous, dir } }, pdf? } — the PDF
+    /// as base64 when asked for.
+    /// </summary>
+    public Task<JsonObject> ReportAsync(string key, string dashboardId, string range, bool makePdf, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/dashboards/{Uri.EscapeDataString(dashboardId)}", new { range, makePdf }, key, null, ct);
 
     /// <summary>The connected workspace's sequences (those of tables the key can read): [{ id, name, status, tableId, tableName }].</summary>
     public Task<JsonArray> SequencesAsync(string key, CancellationToken ct) =>
@@ -172,6 +188,7 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         if (action == "record.find") return await FindAsync(key, input, ct);
         if (action == "record.comment") return await CommentAsync(key, input, idempotencyKey, ct);
         if (action == "sequence.add") return await AddToSequenceAsync(key, input, idempotencyKey, ct);
+        if (action == ReportStep.Action) throw new AppRefusedException(400, "Vantra Flow can't do that.", "unknown_action"); // StepActions runs it (it keeps the PDF)
         var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
         var fields = Fields(input["fields"]);
         if (fields.Count == 0) throw new AppRefusedException(400, "None of the fields have a value.", "empty");

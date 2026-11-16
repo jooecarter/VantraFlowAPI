@@ -144,6 +144,13 @@ public static class FlowCatalog
                 "email (instead of recordId: the record with this address) }. Output: { enrollmentId, state, skipped, reason, recordId }; skipped is true " +
                 "(with reason in_sequence, no_email, unsubscribed or not_found) when they weren't added.",
         },
+        E("orbit", "report.get", "Get a report", ("dashboardId", "a report")) with
+        {
+            Description = "Works an Orbit dashboard out as a report, as the person who connected Orbit (only what they can see): config { dashboardId, " +
+                "range: lastWeek | last7 | monthToDate | lastMonth, makePdf }. Output: each number widget by its title as a slug (revenue_won: the number, " +
+                "revenue_won_text: \"£42,300\", revenue_won_change: per cent, revenue_won_change_text: \"+12%\"), dashboard, range, link and, with makePdf, " +
+                "pdf (a file Send email can attach: attachments: \"{{steps.<id>.pdf}}\").",
+        },
         E("projects", "project.create", "Create project", ("name", "the project's name")),
         E("projects", "task.create", "Create task", ("projectId", "the project"), ("name", "the task's name")),
         E("projects", "task.find", "Find tasks"),

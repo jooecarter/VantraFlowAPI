@@ -39,6 +39,8 @@ public static class PlannerCatalog
         ["orbit/record.find"] = H(["matchField: a field name to match on", "matchValue: the value it equals (text or a token)",
             "updatedWithinHours: number", "limit: number (default 10)"], "count", "names", "first.id", "first.url", "records (a list)"),
         ["orbit/record.comment"] = H([], "id", "url"),
+        ["orbit/report.get"] = H(["range: lastWeek | last7 | monthToDate | lastMonth (default lastWeek)", "makePdf: true to make a PDF for a later Send email"],
+            "<title_slug> (each number, e.g. revenue_won)", "<title_slug>_text", "<title_slug>_change", "link", "pdf"),
         ["projects/project.create"] = H(["description", "dueDate: yyyy-MM-dd or a token"], "id", "name", "url"),
         ["projects/task.create"] = H(["description", "priority: Low | Medium | High | Urgent", "dueDate: yyyy-MM-dd or a token"], "id", "name", "url"),
         ["projects/task.find"] = H(["projectId", "q: name contains", "status", "assignee: an email", "open: \"true\" for open tasks only",

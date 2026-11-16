@@ -43,7 +43,8 @@ public interface IMailRoutes
     string? VantraAddress { get; }
     Task<bool> SendVantraAsync(string replyTo, string fromName, string to, string subject, string html);
     /// <summary>As the workspace's Microsoft 365 or Google account. Throws the app exceptions the engine knows.</summary>
-    Task SendAccountAsync(Guid workspaceId, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct);
+    Task SendAccountAsync(Guid workspaceId, string provider, string to, string subject, string html, string? replyTo, CancellationToken ct,
+        IReadOnlyList<MailFile>? files = null);
     Task<SmtpResult> SendSmtpAsync(SmtpRules.Settings settings, OutgoingMail mail, CancellationToken ct);
 }
 
@@ -177,7 +178,7 @@ public sealed class Senders(IMailboxStore store, ISenderAccounts accounts, IMail
         }
         try
         {
-            await routes.SendAccountAsync(workspaceId, from.Ref.Kind, mail.To, mail.Subject, mail.Html, mail.ReplyTo, ct);
+            await routes.SendAccountAsync(workspaceId, from.Ref.Kind, mail.To, mail.Subject, mail.Html, mail.ReplyTo, ct, mail.Files);
             return SendResult.Done;
         }
         catch (AppRevokedException) { return new(false, Disconnected(from.Email)); }
