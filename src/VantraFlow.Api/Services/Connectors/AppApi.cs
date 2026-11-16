@@ -13,10 +13,17 @@ namespace VantraFlow.Api.Services.Connectors;
 /// The app couldn't be reached, timed out, or answered 5xx / 429: worth trying again. <see cref="Status"/> is the
 /// HTTP status when there was an answer; <see cref="NotSetUp"/> when this server has no address or key for the app.
 /// </summary>
-public sealed class AppUnavailableException(string message, Exception? inner = null, int? status = null, bool notSetUp = false) : Exception(message, inner)
+public sealed class AppUnavailableException(string message, Exception? inner = null, int? status = null, bool notSetUp = false,
+    string? code = null, string? appMessage = null, bool timedOut = false) : Exception(message, inner)
 {
     public int? Status { get; } = status;
     public bool NotSetUp { get; } = notSetUp;
+    /// <summary>The app's own error code on a 5xx answer (e.g. Orbit's <c>send_failed</c>), when it gave one.</summary>
+    public string? Code { get; } = code;
+    /// <summary>The app's own explanation on a 5xx answer. Callers choose whether to show it (Message stays generic).</summary>
+    public string? AppMessage { get; } = appMessage;
+    /// <summary>The app didn't answer within the time allowed (it may still finish the work).</summary>
+    public bool TimedOut { get; } = timedOut;
 }
 
 /// <summary>The connection's key was revoked in the app (401): the connection is marked so, and nothing retries.</summary>
@@ -140,7 +147,8 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
     /// <summary>How the key is sent: Orbit's API v1 takes a bearer key, Projects an X-Api-Key header.</summary>
     protected abstract void Authenticate(HttpRequestMessage req, string key);
 
-    protected async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? key, string? assertion, CancellationToken ct, string? idempotencyKey = null)
+    protected async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? key, string? assertion, CancellationToken ct, string? idempotencyKey = null,
+        TimeSpan? timeLimit = null)
     {
         var baseUrl = ApiUrl ?? throw new AppUnavailableException($"{AppName} isn't set up on this server.", notSetUp: true);
         using var req = new HttpRequestMessage(method, new Uri(baseUrl, path));
@@ -151,10 +159,10 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
         req.Headers.TryAddWithoutValidation("X-Vantra-Origin", "vantra-flow");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(Timeout);
+        timeout.CancelAfter(timeLimit ?? Timeout);
         HttpResponseMessage res;
         try { res = await http.CreateClient(ClientName).SendAsync(req, timeout.Token); }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new AppUnavailableException($"{AppName} didn't answer in time."); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new AppUnavailableException($"{AppName} didn't answer in time.", timedOut: true); }
         catch (HttpRequestException e) { throw new AppUnavailableException($"{AppName} couldn't be reached.", e); }
         using (res)
         {
@@ -168,7 +176,8 @@ public abstract class AppApi(IHttpClientFactory http, IConfiguration config)
             // A feature the app hasn't switched on yet (Orbit's sequences before its db/072) says so in its own words.
             if (code == OffCode) throw new AppUnavailableException(message ?? $"That isn't switched on in {AppName} yet.", status: (int)res.StatusCode);
             if ((int)res.StatusCode >= 500 || res.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout)
-                throw new AppUnavailableException(code == "not_ready" ? $"{AppName} isn't ready for Vantra Flow yet." : $"{AppName} is unavailable.", status: (int)res.StatusCode);
+                throw new AppUnavailableException(code == "not_ready" ? $"{AppName} isn't ready for Vantra Flow yet." : $"{AppName} is unavailable.", status: (int)res.StatusCode,
+                    code: code, appMessage: message);
             if (res.StatusCode == HttpStatusCode.Unauthorized && key is not null) throw new AppRevokedException(AppName);
             throw new AppRefusedException((int)res.StatusCode, message ?? $"{AppName} refused that.", code);
         }

@@ -206,7 +206,8 @@ builder.Services.AddHttpClient(OAuthProvider.ClientName, c =>
 // The apps' APIs: no redirects, no cookies.
 builder.Services.AddHttpClient(AppApi.ClientName, c =>
     {
-        c.Timeout = TimeSpan.FromSeconds(30);
+        // A backstop only: each call sets its own limit (AppApi.Timeout, or longer for a report's Send now).
+        c.Timeout = TimeSpan.FromSeconds(75);
         c.DefaultRequestHeaders.UserAgent.ParseAdd("VantraFlow/1.0");
     })
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });

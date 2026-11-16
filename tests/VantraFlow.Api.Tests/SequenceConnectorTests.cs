@@ -161,6 +161,19 @@ public sealed class SequenceConnectorTests
     }
 
     [Fact]
+    public async Task A_reports_send_now_keeps_orbits_own_reason_and_code()
+    {
+        var (api, h) = Api((_, _) => (HttpStatusCode.BadGateway, """{"error":{"code":"send_failed","message":"The email couldn't be sent."}}"""));
+        var e = await Assert.ThrowsAsync<AppUnavailableException>(() => api.SendReportNowAsync("k", "rps_1", CancellationToken.None));
+        Assert.Equal("/api/v1/reports/schedules/rps_1/send", h.Calls[0].Path);
+        Assert.Equal("send_failed", e.Code);
+        Assert.Equal("The email couldn't be sent.", e.AppMessage);
+        Assert.Equal("Vantra Orbit is unavailable.", e.Message); // the generic text other callers show is unchanged
+        Assert.False(e.TimedOut);
+        Assert.True(OrbitApi.SendNowTimeout > AppApi.Timeout);
+    }
+
+    [Fact]
     public async Task Before_orbit_has_sequences_flow_says_so_in_orbits_words()
     {
         var (api, _) = Api((_, _) => (HttpStatusCode.ServiceUnavailable, Off));
