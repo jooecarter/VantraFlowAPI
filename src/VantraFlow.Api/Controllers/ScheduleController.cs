@@ -15,6 +15,8 @@ namespace VantraFlow.Api.Controllers;
 /// POST api/w/{ws}/schedule/flows/{id}/run           → { runId } a schedule flow's run now (as the developer API's Run now: the plan applies)
 /// POST api/w/{ws}/schedule/reports/{id}/enabled     { enabled } → { schedule } (Orbit's report: pause, resume)
 /// POST api/w/{ws}/schedule/reports/{id}/send        → { status } (Orbit sends it to its recipients now; Orbit rate-limits it)
+/// GET  api/w/{ws}/schedule/reports/{id}             → { schedule, details, cards, limits, members } (the edit panel; outside addresses masked)
+/// PUT  api/w/{ws}/schedule/reports/{id}             { version, title, …, recipients: { members, keep, add } } → the same, as saved
 /// </code>
 /// Members of the workspace see what Flow shows them elsewhere; Orbit's reports only as the person who connected Orbit sees
 /// them there, and changing one needs their rights in Orbit (Orbit checks). Pausing a flow is the flows' own switch. Nothing
@@ -116,6 +118,58 @@ public sealed class ScheduleController(
             return StatusCode(502, new { error = Clip(u.AppMessage), code = u.Code });
         }
         catch (Exception e) when (e is AppRefusedException or AppUnavailableException or AppRevokedException) { return FromOrbit(e); }
+    }
+
+    /// <summary>A refusal from Orbit while editing: its own words for a bad field, and a conflict when it changed meanwhile.</summary>
+    private ObjectResult FromOrbitEdit(Exception e) => e switch
+    {
+        AppRefusedException { Status: 409 } r when r.Code != "not_connected" =>
+            StatusCode(409, new { error = "It was changed in Orbit meanwhile. Close it and open it again to see the changes.", code = "changed" }),
+        AppRefusedException { Status: 400 or 422 } r => StatusCode(400, new { error = Clip(r.Message), code = "invalid" }),
+        AppUnavailableException { Code: "not_ready" } => StatusCode(503, new { error = "Scheduled reports aren't switched on in Orbit yet.", code = "not_ready" }),
+        _ => FromOrbit(e),
+    };
+
+    [HttpGet("api/w/{workspaceId:guid}/schedule/reports/{id}")]
+    public async Task<IActionResult> Report(Guid workspaceId, string id, CancellationToken ct)
+    {
+        var (_, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!OrbitId(id)) return NotFound(new { error = "That report isn't there any more.", code = "no_report" });
+        try
+        {
+            var view = await connections.CallAsync(workspaceId, "orbit", async (api, key) =>
+            {
+                var orbit = (OrbitApi)api;
+                var one = await orbit.ReportScheduleAsync(key, id, ct);
+                return ScheduleEdit.ReportView(one, await orbit.ReportMembersAsync(key, ct));
+            });
+            return Ok(view);
+        }
+        catch (Exception e) when (e is AppRefusedException or AppUnavailableException or AppRevokedException) { return FromOrbitEdit(e); }
+    }
+
+    [HttpPut("api/w/{workspaceId:guid}/schedule/reports/{id}")]
+    public async Task<IActionResult> SaveReport(Guid workspaceId, string id, [FromBody] JsonObject? body, CancellationToken ct)
+    {
+        var (role, refusal) = await MemberAsync(workspaceId);
+        if (refusal is not null) return refusal;
+        if (!Services.Team.TeamRules.CanEdit(role)) return StatusCode(403, new { error = "You can't change schedules in this workspace.", code = "forbidden" });
+        if (!OrbitId(id)) return NotFound(new { error = "That report isn't there any more.", code = "no_report" });
+        if (body is null) return BadRequest(new { error = "Say what to change.", code = "invalid" });
+        try
+        {
+            var view = await connections.CallAsync(workspaceId, "orbit", async (api, key) =>
+            {
+                var orbit = (OrbitApi)api;
+                var saved = await orbit.UpdateReportScheduleAsync(key, id, ScheduleEdit.ReportChange(body), ct);
+                return ScheduleEdit.ReportView(saved, await orbit.ReportMembersAsync(key, ct));
+            });
+            cache.Forget(workspaceId);
+            log.LogInformation("Workspace {Workspace}: Orbit report {Id} changed from the Schedule page", workspaceId, id);
+            return Ok(view);
+        }
+        catch (Exception e) when (e is AppRefusedException or AppUnavailableException or AppRevokedException) { return FromOrbitEdit(e); }
     }
 
     private static string Clip(string s) => s.Length <= 300 ? s : s[..300];

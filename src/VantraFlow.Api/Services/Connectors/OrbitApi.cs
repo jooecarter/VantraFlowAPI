@@ -79,6 +79,22 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     public Task<JsonObject> SendReportNowAsync(string key, string id, CancellationToken ct) =>
         SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}/send", new { }, key, null, ct, timeLimit: SendNowTimeout);
 
+    /// <summary>
+    /// One report schedule to edit on the Schedule page, as the person who connected Orbit (their rights there): its fields, the
+    /// dashboard's cards, and who it goes to — members by VantraId and name, outside addresses masked (<c>f•••@example.com</c>)
+    /// with an id. Orbit never sends a full outside address.
+    /// </summary>
+    public Task<JsonObject> ReportScheduleAsync(string key, string id, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Get, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}", null, key, null, ct);
+
+    /// <summary>Changes a report schedule in Orbit (Orbit checks the rights, the people and the limits): the schedule as saved.</summary>
+    public Task<JsonObject> UpdateReportScheduleAsync(string key, string id, JsonObject body, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Put, $"/api/v1/reports/schedules/{Uri.EscapeDataString(id)}", body, key, null, ct);
+
+    /// <summary>The Orbit workspace's members for Send to's picker: <c>{ members: [{ vantraId, name }] }</c>.</summary>
+    public Task<JsonObject> ReportMembersAsync(string key, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Get, "/api/v1/reports/members", null, key, null, ct);
+
     /// <summary>The connected workspace's sequences (those of tables the key can read): [{ id, name, status, tableId, tableName }].</summary>
     public Task<JsonArray> SequencesAsync(string key, CancellationToken ct) =>
         SendAsync<JsonArray>(HttpMethod.Get, "/api/v1/sequences", null, key, null, ct);
