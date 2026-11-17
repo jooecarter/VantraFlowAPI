@@ -233,6 +233,10 @@ public sealed class ScheduleBoard(IScheduleSources sources, ScheduleCache cache)
             ["canChange"] = s["canChange"] is JsonValue cc && cc.TryGetValue<bool>(out var can) && can,
             ["link"] = link is not null && link.StartsWith("https://", StringComparison.Ordinal) ? link : null,
             ["lastStatus"] = Text(s["lastStatus"]),
+            // Orbit's spreadsheets of rows (kind "rows") list here too, with a line of their own, and are changed in Orbit.
+            ["reportKind"] = Text(s["kind"]) == "rows" ? "rows" : "dashboard",
+            ["meta"] = Text(s["meta"]) is { Length: > 0 and <= 200 } meta ? meta : null,
+            ["canEdit"] = Text(s["kind"]) != "rows" && !(s["canEdit"] is JsonValue ce && ce.TryGetValue<bool>(out var edit) && !edit),
             ["runs"] = ByDay(runs, zone),
         };
     }

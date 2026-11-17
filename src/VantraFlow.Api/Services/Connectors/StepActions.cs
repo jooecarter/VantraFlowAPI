@@ -36,6 +36,7 @@ public sealed partial class StepActions(Connections connections, EmailService em
             return step.App switch
             {
                 "orbit" when step.Action == ReportStep.Action => await ReportAsync(call, ct),
+                "orbit" when step.Action == RowsStep.Action => await ExportRowsAsync(call, ct),
                 "orbit" or "projects" => StepOutcome.Done(await connections.CallAsync(call.WorkspaceId, step.App,
                     (api, key) => api.ActAsync(key, step.Action ?? "", call.Input, $"flow:{call.RunId}:{step.Id}", ct))),
                 "email" => await EmailAsync(call, ct),

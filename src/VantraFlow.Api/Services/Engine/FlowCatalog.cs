@@ -151,6 +151,14 @@ public static class FlowCatalog
                 "revenue_won_text: \"£42,300\", revenue_won_change: per cent, revenue_won_change_text: \"+12%\"), dashboard, range, link and, with makePdf, " +
                 "pdf (a file Send email can attach: attachments: \"{{steps.<id>.pdf}}\").",
         },
+        E("orbit", "rows.export", "Export rows", ("tableId", "a table")) with
+        {
+            Description = "Exports an Orbit table view's rows as a spreadsheet, as the person who connected Orbit (hidden tables and secret fields never go in): " +
+                "config { tableId, viewId (its filters, sort and columns; empty: the table's first view), range: yesterday | today | last7 | lastWeek | monthToDate | " +
+                "lastMonth | all (rows added then, by created time), format: xlsx | csv }. Output: file (a file Send email can attach: attachments: " +
+                "\"{{steps.<id>.file}}\"), file_name, row_count, rows (the first 500, a list for For each: { id, url, createdAt, fields: { Column: text } }), " +
+                "rows_cut, truncated, table, view, range, link.",
+        },
         E("projects", "project.create", "Create project", ("name", "the project's name")),
         E("projects", "task.create", "Create task", ("projectId", "the project"), ("name", "the task's name")),
         E("projects", "task.find", "Find tasks"),
