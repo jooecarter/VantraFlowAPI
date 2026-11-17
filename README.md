@@ -178,6 +178,13 @@ bash scripts/sqlcheck.sh
   `POST api/w/{ws}/apps/orbit/report-preview { dashboardId, range }` gives the panel today's numbers. **Before db/015**
   "Make a PDF" and Attachments are hidden, and a step that asks for a PDF fails with a plain message; the numbers work.
 
+- **The Flows list's outline** (`Services/Engine/FlowOutline.cs`): each flow in `GET api/w/{ws}/flows` carries `outline`
+  `{ trigger: { app, event, config }, actions: [{ app, action, name?, config }], actionCount }` — the trigger's few settings
+  that say what it watches (a table, a project, a sequence, a form's title, a schedule's time and days) and the first three
+  actions with where they send or write (a table, a project, who an email goes to, a channel; an HTTP request's host only).
+  Whitelisted keys and short plain values: never a body, a header, a secret or a credential. The SPA names the tables and
+  projects from its own schema.
+
 - **Vantra Orbit rows** ("Export rows", `orbit / rows.export`; `Services/Connectors/RowsStep.cs`): config { tableId, viewId,
   range: yesterday | today | last7 | lastWeek | monthToDate | lastMonth | all, format: xlsx | csv }. Orbit reads the view (its
   filters, sort and columns) as the person who connected it — hidden tables and secret fields never go in — and keeps the rows

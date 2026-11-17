@@ -439,7 +439,8 @@ public sealed class FlowsController(
         var apps = new List<string> { def.Trigger.App };
         apps.AddRange(def.AllSteps().Where(x => x.Type == StepTypes.Action && x.App is not null).Select(x => x.App!));
         return new FlowSummaryDto(f.Id, f.Name, f.Description, f.Enabled, f.TriggerApp, f.TriggerEvent, apps.Where(a => a.Length > 0).Distinct().ToList(),
-            def.AllSteps().Count(), Iso(f.LastRunAt), f.LastRunStatus, s?.Runs ?? 0, s?.Failures ?? 0, Iso(f.UpdatedAt), f.PausedReason, f.TemplateId);
+            def.AllSteps().Count(), Iso(f.LastRunAt), f.LastRunStatus, s?.Runs ?? 0, s?.Failures ?? 0, Iso(f.UpdatedAt), f.PausedReason, f.TemplateId,
+            Outline: FlowOutline.Build(def));
     }
 
     private static FlowDefinition? Definition(JsonNode? node)
