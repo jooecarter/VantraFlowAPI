@@ -55,7 +55,7 @@ public sealed class MentionMail(EmailService email, IConfiguration config, ILogg
         var text = comment.Length > 600 ? comment[..600] + "…" : comment;
         var quote = WebUtility.HtmlEncode(text).Replace("\n", "<br>");
         var body = $"{E(who)} mentioned you in a comment on <strong>{E(flowName)}</strong> in {E(workspaceName)}:</p>"
-                   + $@"<p style=""margin:0 0 18px;padding:12px 14px;border-left:3px solid #12855d;background:#f4f6f5;border-radius:6px;font-size:14.5px;line-height:1.55;color:#18222f;"">{quote}";
+                   + $@"<p style=""margin:0 0 18px;padding:12px 14px;border-left:3px solid #223947;background:#f4f6f5;border-radius:6px;font-size:14.5px;line-height:1.55;color:#18222f;"">{quote}";
         return (subject, WorkspaceMail.Frame("You were mentioned", body, "Open the comments", link,
             "You get at most one email an hour for each flow you're mentioned on.", showLink: false));
     }

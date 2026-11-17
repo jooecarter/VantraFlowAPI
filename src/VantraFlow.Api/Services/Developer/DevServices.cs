@@ -204,7 +204,7 @@ public static class DevMail
           <p style=""margin:0 0 18px;font-size:14px;line-height:1.55;color:#43505c;"">{E(reason)} Nothing more is sent to it until it's switched back on. Its delivery log shows each answer.</p>
         </td></tr>
         <tr><td style=""padding:0 28px 28px;"">
-          <a href=""{E(settingsUrl)}"" style=""display:inline-block;background:#12855d;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 24px;border-radius:8px;"">Open Developers</a>
+          <a href=""{E(settingsUrl)}"" style=""display:inline-block;background:#223947;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 24px;border-radius:8px;"">Open Developers</a>
         </td></tr>
       </table>
     </td></tr>

@@ -138,9 +138,9 @@ public static class ApprovalMail
           {more}
         </td></tr>
         <tr><td style=""padding:0 28px 26px;"">
-          <a href=""{E(approveUrl)}"" style=""display:inline-block;background:#12855d;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 24px;border-radius:8px;margin-right:8px;"">Approve</a>
+          <a href=""{E(approveUrl)}"" style=""display:inline-block;background:#223947;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 24px;border-radius:8px;margin-right:8px;"">Approve</a>
           <a href=""{E(rejectUrl)}"" style=""display:inline-block;background:#ffffff;color:#b42318;text-decoration:none;font-size:15px;font-weight:600;padding:11px 23px;border-radius:8px;border:1px solid #f1c4c0;"">Reject</a>
-          <p style=""margin:16px 0 0;font-size:12.5px;line-height:1.5;color:#8b95a3;"">Or decide in <a href=""{E(inboxUrl)}"" style=""color:#12855d;"">your approvals inbox</a>.</p>
+          <p style=""margin:16px 0 0;font-size:12.5px;line-height:1.5;color:#8b95a3;"">Or decide in <a href=""{E(inboxUrl)}"" style=""color:#223947;"">your approvals inbox</a>.</p>
         </td></tr>
         <tr><td style=""padding:16px 28px;border-top:1px solid #eef1ef;font-size:12px;color:#9aa3ad;"">The first decision counts. The links work once, until {E(expiresAt.ToString("d MMM yyyy, HH:mm", System.Globalization.CultureInfo.InvariantCulture))} UTC.</td></tr>
       </table>

@@ -85,7 +85,7 @@ public sealed class WorkspaceMail(EmailService email, IConfiguration config, ILo
     {
         var url = E(link);
         var plain = showLink
-            ? $@"<p style=""margin:16px 0 0;font-size:12.5px;line-height:1.5;color:#8b95a3;"">Or paste this into your browser:<br><a href=""{url}"" style=""color:#12855d;word-break:break-all;"">{url}</a></p>"
+            ? $@"<p style=""margin:16px 0 0;font-size:12.5px;line-height:1.5;color:#8b95a3;"">Or paste this into your browser:<br><a href=""{url}"" style=""color:#223947;word-break:break-all;"">{url}</a></p>"
             : "";
         return $@"<!DOCTYPE html>
 <html>
@@ -101,7 +101,7 @@ public sealed class WorkspaceMail(EmailService email, IConfiguration config, ILo
           <p style=""margin:0 0 18px;font-size:15px;line-height:1.6;color:#43505c;"">{body}</p>
         </td></tr>
         <tr><td style=""padding:0 28px 28px;"">
-          <a href=""{url}"" style=""display:inline-block;background:#12855d;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 22px;border-radius:8px;"">{button}</a>
+          <a href=""{url}"" style=""display:inline-block;background:#223947;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 22px;border-radius:8px;"">{button}</a>
           {plain}
         </td></tr>
         <tr><td style=""padding:16px 28px;border-top:1px solid #eef1ef;font-size:12px;color:#9aa3ad;"">{E(foot)}</td></tr>

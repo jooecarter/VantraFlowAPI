@@ -33,10 +33,10 @@ public static partial class FlowEmailTemplate
     <tr><td align=""center"" style=""padding:32px 16px;"">
       <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0"" style=""max-width:560px;"">
         <tr><td style=""padding:0 4px 14px;font-family:{Font};"">
-          <span style=""display:inline-block;width:22px;height:22px;line-height:22px;border-radius:6px;background:#12855d;color:#ffffff;font-size:13px;font-weight:700;text-align:center;vertical-align:middle;"">V</span>
+          <span style=""display:inline-block;width:22px;height:22px;line-height:22px;border-radius:6px;background:#223947;color:#ffffff;font-size:13px;font-weight:700;text-align:center;vertical-align:middle;"">V</span>
           <span style=""margin-left:8px;font-size:14px;font-weight:700;color:#0f3d2e;vertical-align:middle;"">Vantra <span style=""font-weight:400;"">Flow</span></span>
         </td></tr>
-        <tr><td style=""background:#ffffff;border:1px solid #e1e7e4;border-top:4px solid #12855d;border-radius:12px;padding:30px 32px 26px;font-family:{Font};"">
+        <tr><td style=""background:#ffffff;border:1px solid #e1e7e4;border-top:4px solid #223947;border-radius:12px;padding:30px 32px 26px;font-family:{Font};"">
           <h1 style=""margin:0 0 16px;font-size:21px;line-height:1.3;font-weight:700;color:#15202b;"">{heading}</h1>
 {paragraphs}
         </td></tr>
@@ -73,7 +73,7 @@ public static partial class FlowEmailTemplate
             var url = m.Value;
             var tail = "";
             while (url.Length > 0 && ".,;:!?)]'\"".Contains(url[^1])) { tail = url[^1] + tail; url = url[..^1]; }
-            return $"<a href=\"{url}\" style=\"color:#12855d;text-decoration:underline;word-break:break-all;\">{url}</a>{tail}";
+            return $"<a href=\"{url}\" style=\"color:#223947;text-decoration:underline;word-break:break-all;\">{url}</a>{tail}";
         });
 
     /// <summary>The inbox's preview line: the start of the message on one line, at most 110 characters.</summary>
