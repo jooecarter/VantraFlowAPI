@@ -125,7 +125,7 @@ public sealed record AppDto(string App, string Name, bool Configured, Connection
 public sealed record FlowSummaryDto(
     string Id, string Name, string? Description, bool Enabled, string TriggerApp, string TriggerEvent, IReadOnlyList<string> Apps,
     int StepCount, string? LastRunAt, string? LastRunStatus, int Runs7d, int Failures7d, string UpdatedAt, string? PausedReason, string? TemplateId,
-    IReadOnlyList<int>? Daily7d = null, IReadOnlyList<int>? DailyFailures7d = null);
+    IReadOnlyList<int>? Daily7d = null, IReadOnlyList<int>? DailyFailures7d = null, JsonObject? Outline = null);
 
 public sealed record FlowDto(
     string Id, string Name, string? Description, bool Enabled, JsonNode Definition, int Version, string? HookUrl, bool HookSigned,
