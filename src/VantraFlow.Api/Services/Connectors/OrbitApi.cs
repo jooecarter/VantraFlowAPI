@@ -59,6 +59,18 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
     public Task<JsonObject> ReportAsync(string key, string dashboardId, string range, bool makePdf, CancellationToken ct) =>
         SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/reports/dashboards/{Uri.EscapeDataString(dashboardId)}", new { range, makePdf }, key, null, ct);
 
+    /// <summary>How long an export may take: Orbit reads the view and builds a file of up to 10,000 rows.</summary>
+    public static readonly TimeSpan ExportTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// "Export rows": a table view's rows as the person who connected Orbit sees them (hidden tables and secret fields never go in), the
+    /// ones added in a range: { table, view, range, link, rowCount, truncated, columns, rows: [{ id, createdAt, fields }], file? } —
+    /// the .xlsx or .csv as base64 when asked for.
+    /// </summary>
+    public Task<JsonObject> ExportRowsAsync(string key, string tableId, string? viewId, string range, string format, bool makeFile, CancellationToken ct) =>
+        SendAsync<JsonObject>(HttpMethod.Post, $"/api/v1/tables/{Uri.EscapeDataString(tableId)}/export",
+            new { viewId, range, format, makeFile, rowLimit = RowsStep.MaxRows }, key, null, ct, timeLimit: ExportTimeout);
+
     /// <summary>
     /// The report schedules the person who connected Orbit can see (Orbit's own rights), for the Schedule page:
     /// <c>{ available, reason, schedules: [{ id, title, dashboardName, summary, rangeLabel, recipientCount, enabled, runs, link, canChange, … }] }</c>.
@@ -224,7 +236,7 @@ public sealed class OrbitApi(IHttpClientFactory http, IConfiguration config) : A
         if (action == "record.find") return await FindAsync(key, input, ct);
         if (action == "record.comment") return await CommentAsync(key, input, idempotencyKey, ct);
         if (action == "sequence.add") return await AddToSequenceAsync(key, input, idempotencyKey, ct);
-        if (action == ReportStep.Action) throw new AppRefusedException(400, "Vantra Flow can't do that.", "unknown_action"); // StepActions runs it (it keeps the PDF)
+        if (action is ReportStep.Action or RowsStep.Action) throw new AppRefusedException(400, "Vantra Flow can't do that.", "unknown_action"); // StepActions runs them (they keep a file)
         var table = Uri.EscapeDataString(Required(input, "tableId", "The table"));
         var fields = Fields(input["fields"]);
         if (fields.Count == 0) throw new AppRefusedException(400, "None of the fields have a value.", "empty");

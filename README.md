@@ -178,6 +178,23 @@ bash scripts/sqlcheck.sh
   `POST api/w/{ws}/apps/orbit/report-preview { dashboardId, range }` gives the panel today's numbers. **Before db/015**
   "Make a PDF" and Attachments are hidden, and a step that asks for a PDF fails with a plain message; the numbers work.
 
+- **The Flows list's outline** (`Services/Engine/FlowOutline.cs`): each flow in `GET api/w/{ws}/flows` carries `outline`
+  `{ trigger: { app, event, config }, actions: [{ app, action, name?, config }], actionCount }` — the trigger's few settings
+  that say what it watches (a table, a project, a sequence, a form's title, a schedule's time and days) and the first three
+  actions with where they send or write (a table, a project, who an email goes to, a channel; an HTTP request's host only).
+  Whitelisted keys and short plain values: never a body, a header, a secret or a credential. The SPA names the tables and
+  projects from its own schema.
+
+- **Vantra Orbit rows** ("Export rows", `orbit / rows.export`; `Services/Connectors/RowsStep.cs`): config { tableId, viewId,
+  range: yesterday | today | last7 | lastWeek | monthToDate | lastMonth | all, format: xlsx | csv }. Orbit reads the view (its
+  filters, sort and columns) as the person who connected it — hidden tables and secret fields never go in — and keeps the rows
+  added in the range (REST API v1 `POST /api/v1/tables/{id}/export`). Outputs: `file` (the .xlsx or .csv, a **file output** in
+  `flow.RunFiles` that Send email attaches: `{{steps.<id>.file}}`), `file_name`, `row_count` (for Paths: "Row count more than
+  0"), `rows` (the first 500 as a list for For each: `{ id, url, createdAt, fields: { Column: text } }`), `rows_cut`,
+  `truncated` (more than the file's 10,000), `table`, `view`, `range`, `link`. **Before db/015** there's no file output; the
+  count and the rows work. Orbit's table lists (`…/apps/orbit/schema` → `tables`) carry each table's `space`, `folder` and
+  `views` as Orbit sends them (an older Orbit sends none: the pickers just don't group).
+
 - **Schedule page** (`Controllers/ScheduleController.cs`, `Services/Schedule/ScheduleBoard.cs`): everything set to run on its
   own, across Flow, Orbit and Projects. No migration.
   ```
@@ -188,7 +205,8 @@ bash scripts/sqlcheck.sh
   ```
   Items: schedule flows' slots (`ScheduleRules.Occurrences`: the worker's own `Matches`, minute by minute, in the
   workspace's zone), date flows' runs (the "Coming up" scan, counts only: `DateTriggers.UpcomingAsync`; Projects' overdue
-  tasks are date triggers too) and Orbit's report schedules (Orbit's `GET /api/v1/reports/schedules` with the connection's
+  tasks are date triggers too) and Orbit's report schedules — dashboards and spreadsheets of rows (`reportKind: rows`, with
+  Orbit's `meta` line, "Spreadsheet · Leads · added yesterday"; changed in Orbit: `canEdit: false`) — (Orbit's `GET /api/v1/reports/schedules` with the connection's
   key: what the person who connected Orbit can see there, a recipient count and never an address). Runs are grouped by day
   in the viewer's zone (`zone`): a frequent schedule shows its first run each day and how many more. Paused schedule and date
   flows, and paused reports, come back in `paused`; pausing or resuming a flow is its own switch (`flows/{id}/enable`).
