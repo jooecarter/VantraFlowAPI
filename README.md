@@ -326,6 +326,13 @@ bash scripts/sqlcheck.sh
   runs against the plan's quota, read through `IRunLimits` alone. Added up in SQL. Once db/006 has run, the hourly prune adds
   the runs it deletes to their flow's day (`flow.RunDays`) in the same transaction, so the 90 days hold up after the
   runs are gone; durations and failing steps cover the runs still kept (`Flow:KeepRunsDays`).
+- **Appearance and the workspace cover**, on the shared identity database (VantraProjectsAPI `db/shared/003`):
+  `GET` / `PUT api/me/appearance` read and merge how Flow, Orbit and Projects look for you (`theme`, `nav`, `density`,
+  `reduceMotion`, `accent`, `aiRibbon`; a null is kept, so an app never clears what it doesn't show), and
+  `GET` / `PUT api/w/{ws}/details` the shared workspace's `description` (500 at most) and `cover` (a PNG, JPEG or WebP
+  data URL of 400,000 characters at most) or `coverPreset` (a CSS gradient), never both. Members read them, owners and
+  admins change them. Until `db/shared/003` has run, appearance answers `{ available: false }` (PUT 404 `not_ready`) and
+  the studio keeps it in the browser, and the details answer `{ available: false }` (PUT 409 `not_ready`).
 
 Until db/001 has run, every endpoint except sign-in and `/api/health` answers 503 `not_ready`, and the worker
 waits. Until db/002 has run, failure alerts are hidden, their endpoints answer 503 `not_ready`, and none are sent.

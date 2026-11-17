@@ -55,6 +55,12 @@ builder.Services.AddScoped<VantraFlow.Api.Shared.SharedTeam>();
 builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedDirectory, VantraFlow.Api.Shared.SqlSharedDirectory>();
 builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedSpaces>();
 builder.Services.AddScoped<VantraFlow.Api.Shared.FlowSpaces>();
+// db/shared/003: appearance saved to the Vantra account (Flow, Orbit and Projects match), and the shared workspace's
+// cover and description. Both probe for 003 and answer as before until it has run.
+builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedAppearanceStore, VantraFlow.Api.Shared.SqlSharedAppearanceStore>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedAppearanceService>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.ISharedDetailsStore, VantraFlow.Api.Shared.SqlSharedDetailsStore>();
+builder.Services.AddSingleton<VantraFlow.Api.Shared.SharedDetailsService>();
 builder.Services.AddScoped<FlowReadyFilter>();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<WorkspacesRepository>();
