@@ -94,11 +94,14 @@ public sealed class MembersController(
             {
                 if (!self) return SharedOnly();
                 var r = await team.LeaveAsync(st, new SharedActor(Sub, DisplayName, Email));
+                if (r.Status is >= 200 and < 300) await NotifyMemberAsync(workspaceId, Sub, DisplayName, "left");
                 return r.Body is null ? StatusCode(r.Status) : StatusCode(r.Status, r.Body);
             }
         }
+        var gone = (await Workspaces.MembersAsync(workspaceId)).FirstOrDefault(m => string.Equals(m.VantraId, vantraId, StringComparison.OrdinalIgnoreCase));
         var plan = await Workspaces.ApplyAsync(workspaceId, s => self ? WorkspaceRules.Leave(s, Sub) : WorkspaceRules.Remove(s, Sub, vantraId));
         if (plan is null) return NotFound(new { error = "That workspace isn't one of yours.", code = "no_workspace" });
+        if (plan.Ok && gone is not null) await NotifyMemberAsync(workspaceId, gone.VantraId, gone.Name ?? gone.Email, self ? "left" : "was removed from");
         return plan.Ok ? NoContent() : Refuse(plan.Error!);
     }
 
@@ -239,6 +242,7 @@ public sealed class MembersController(
     {
         var name = $"{user.FirstName} {user.LastName}".Trim();
         if (!await Workspaces.AddMemberAsync(workspaceId, user.VantraID!, role, user.Email, name.Length > 0 ? name : null, Sub)) return (null, false);
+        await NotifyMemberAsync(workspaceId, user.VantraID!, name.Length > 0 ? name : user.Email, "joined");
         var ws = await Workspaces.GetAsync(workspaceId);
         var emailed = mail.CanSend && ws is not null
                       && await mail.SendAddedAsync(user.Email, name.Length > 0 ? name : null, ws.Name, DisplayName, Email, role, mail.WorkspaceLink(Origin, workspaceId));
@@ -253,6 +257,12 @@ public sealed class MembersController(
         if (ws is null || !await mail.SendInviteAsync(row.Email, ws.Name, DisplayName, Email, row.Role, link)) return null;
         return await invites.MarkSentAsync(row.Id) ?? row;
     }
+
+    /// <summary>The owners and admins hear (db/016; best effort, never fails the request).</summary>
+    private Task NotifyMemberAsync(Guid workspaceId, string vantraId, string? name, string verb) =>
+        HttpContext?.RequestServices?.GetService<Services.Notifications.Notifier>() is { } notes
+            ? notes.MemberAsync(workspaceId, vantraId, name, verb, Sub)
+            : Task.CompletedTask;
 
     private static MemberDto Dto(MemberRow m) => new(m.VantraId, m.Name, m.Email, m.Role, Iso(m.AddedAt));
 

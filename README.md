@@ -18,6 +18,7 @@ db/006_ai_insights.sql    the AI builder's monthly count, time-saved figures, da
 db/010_reliability.sql    error handling: auto-pause per flow, the daily failure digest (on for new workspaces)
 db/013_mailboxes.sql      send from your own mailbox: SMTP mailboxes (sealed passwords) and the workspace's default sender
 db/014_triggers.sql       forms (their links and answers), the date triggers' ledger and scans
+db/016_notifications.sql  notifications (the bell and Inbox), and per-person settings: notification switches, job title
 tools/sqlcheck            Orbit's ScriptDom checker: every query and migration parsed as T-SQL
 scripts/sqlcheck.sh
 ```
@@ -302,6 +303,45 @@ bash scripts/sqlcheck.sh
   - **Plans**: Microsoft 365 and Google are premium apps, so sending from an own mailbox follows them: Outlook counts as
     Microsoft 365, Gmail as Google and an SMTP mailbox as `smtp` (in `Billing:PremiumApps`). A step that names one makes its
     flow premium; a step on the default is checked as it sends; setting an own mailbox as the default needs the plan (402).
+- **Notifications** (db/016; `Services/Notifications`, `NotificationsController`). Per person and workspace
+  (`flow.Notifications`), kept 90 days:
+  ```
+  GET  api/w/{ws}/notifications?before={id}&take=30&unread=true → { available, items, unread, next }
+  GET  api/w/{ws}/notifications/unread                         → { available, unread }
+  POST api/w/{ws}/notifications/{id}/read   { read? = true }   → 204
+  POST api/w/{ws}/notifications/read-all                       → { marked }
+  GET  api/me/notification-prefs                               → { available, prefs: { kind: { app, email } } }
+  PUT  api/me/notification-prefs   { kind: { app?, email? } }  → the same, as saved
+  ```
+  Raised where things happen, best effort (a notification never fails what it follows), only to members:
+  - `approval`: an Approval step asks you (each approver). Its email is the approval email with its Approve and Reject
+    links, which now goes only to approvers with that email switch on. Deciding (or its time running out) marks everyone's
+    note read.
+  - `flow_failed`: a run of a flow you own failed (`OwnerId`, else its creator). One note per flow per hour, counted up
+    ("failed 3 times"), unread again. Its email is the failure alert (below): no second email.
+  - `flow_paused`: Flow switched a flow off: auto-pause ("failed 3 times and was paused") or the loop breaker. Its owner,
+    the owners and admins, emailed by their switch; this replaces auto-pause's own email to owners.
+  - `connection`: a connection needs signing in again (Orbit or Projects revoked Flow's key, a provider refused its token
+    or refresh, Slack removed Flow), with how many flows were paused. Who connected it, the owners and admins; once a day
+    per connection.
+  - `report_sent`: a scheduled flow that gets an Orbit report or exports rows emailed it: "sent to 4 people" (its owner).
+  - `members`: someone joined (added, or accepted an invitation) or left or was removed (owners and admins, not whoever
+    did it).
+
+  Switches per kind, in the app and by email: everything in the app; email for approvals, failures and pauses. A kind
+  switched off in the app is still kept (so it groups and emails once) but not listed or counted. **Failure alerts fold
+  in**: once db/016 has run, the workspace default ("email a flow's owner when it fails") goes to the flow's owner rather
+  than its creator, and the person's "A flow I own fails" email switch has the last word over both the default and a
+  flow's own "Email me when this flow fails". The daily failure digest is unchanged. Plan downgrades keep their own
+  email. **Before db/016** the reads answer `{ available: false }` (the studio's bell shows the last day's failed runs),
+  writes 503 `not_ready`, nothing is raised and every email goes exactly as before.
+- **Profile** (`ProfileController`, `Data/ProfileStore.cs`): `GET` / `PUT api/me/profile { firstName, lastName, jobTitle?,
+  timeZone?, photo? }`, on the shared identity (`Vantra.dbo.UserDetails`), so Orbit and Projects show the same: the name
+  (Flow's member lists follow it), and once VantraProjectsAPI's db/96 has added them the photo (`Avatar`, a PNG, JPEG or
+  WebP data URL, 400,000 characters at most, "" removes it) and time zone (`Timezone`, in Projects' shape
+  "Europe/London (GMT)"). The email is read only (changed in Projects, which confirms it). The job title is kept in Flow
+  (`flow.UserProfiles`, db/016), as Orbit and Projects each keep their own per workspace. Password and two-step sign-in
+  stay where they're managed (Projects and Orbit), since Flow keeps no sessions to sign out.
 - **Versions.** Every save keeps a copy (the newest 100 per flow): `GET …/flows/{id}/versions`, one by number, and
   restore, which saves it again as the newest. Runs record the version they ran.
 
@@ -384,5 +424,5 @@ Set these in App Service configuration, never in the repo:
 
 Deploys run through `.github/workflows/main_vantraflow.yml` to the `vantraflow` App Service. It uses the
 `AZUREAPPSERVICE_CLIENTID`, `AZUREAPPSERVICE_TENANTID` and `AZUREAPPSERVICE_SUBSCRIPTIONID` secrets. Run
-`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, then `db/012_developer_api.sql`, then `db/013_mailboxes.sql`, then `db/014_triggers.sql`, by hand against the `vantraflow` database, connected to it, each
+`db/001_flow.sql`, then `db/002_failure_alerts.sql`, then `db/003_flow_versions.sql`, then `db/004_oauth_connectors.sql`, then `db/005_workspace_invites.sql`, then `db/006_ai_insights.sql`, then `db/007_steps_apps.sql`, then `db/008_plans.sql`, then `db/010_reliability.sql`, then `db/011_team.sql`, then `db/012_developer_api.sql`, then `db/013_mailboxes.sql`, then `db/014_triggers.sql`, then `db/015_run_files.sql`, then `db/016_notifications.sql`, by hand against the `vantraflow` database, connected to it, each
 as one batch.

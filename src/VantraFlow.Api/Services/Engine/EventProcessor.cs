@@ -86,7 +86,8 @@ public sealed class EventProcessor(IEngineStore store, FlowLimits limits, Func<D
 }
 
 /// <summary>The SQL side of <see cref="IEngineStore"/>.</summary>
-public sealed class SqlEngineStore(FlowsRepository flows, WorkspacesRepository workspaces, EngineRepository engine, Billing.Plans plans) : IEngineStore
+public sealed class SqlEngineStore(FlowsRepository flows, WorkspacesRepository workspaces, EngineRepository engine, Billing.Plans plans,
+    Notifications.Notifier? notifier = null) : IEngineStore
 {
     /// <summary>The workspace's plan decides: its run quota, and whether the flow's premium steps may run.</summary>
     public async Task<string?> AdmitAsync(WorkspaceRow ws, FlowDefinition def, DateTime now, int quota) =>
@@ -105,6 +106,13 @@ public sealed class SqlEngineStore(FlowsRepository flows, WorkspacesRepository w
     public Task<bool> ClaimKeyAsync(Guid workspaceId, string flowId, string key) => engine.ClaimKeyAsync(workspaceId, flowId, key);
     public Task<bool> CountRunAsync(Guid workspaceId, DateTime now, int quota) => engine.CountRunAsync(workspaceId, now, quota);
     public Task<int> RunsSinceAsync(Guid workspaceId, string? flowId, DateTime since) => engine.RunsSinceAsync(workspaceId, flowId, since);
-    public Task<bool> PauseAsync(Guid workspaceId, string flowId, string reason) => flows.PauseAsync(workspaceId, flowId, reason);
+    /// <summary>The loop breaker's pause; the flow's owner, the owners and admins hear (db/016).</summary>
+    public async Task<bool> PauseAsync(Guid workspaceId, string flowId, string reason)
+    {
+        if (!await flows.PauseAsync(workspaceId, flowId, reason)) return false;
+        if (notifier is not null) await notifier.FlowPausedAsync(workspaceId, flowId, Notifications.NotificationRules.PausedBecause(reason));
+        return true;
+    }
+
     public Task InsertRunAsync(RunRow run) => engine.InsertRunAsync(run);
 }

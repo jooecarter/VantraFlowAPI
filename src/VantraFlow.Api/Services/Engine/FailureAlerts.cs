@@ -12,7 +12,7 @@ namespace VantraFlow.Api.Services.Engine;
 /// before db/002 has run.
 /// </summary>
 public sealed class FailureAlerts(AlertsRepository alerts, EngineRepository engine, EmailService email, FlowSchema schema, IConfiguration config,
-    FlowLimits limits, ILogger<FailureAlerts> log)
+    FlowLimits limits, ILogger<FailureAlerts> log, Notifications.Notifier? notifier = null)
 {
     public string AppBase => (config["App:BaseUrl"] is { Length: > 0 } u ? u : "https://vantraflow-web.azurewebsites.net").TrimEnd('/');
 
@@ -24,12 +24,16 @@ public sealed class FailureAlerts(AlertsRepository alerts, EngineRepository engi
     {
         if (!await schema.AlertsReadyAsync() || !email.CanSend()) return 0;
         var sent = 0;
-        foreach (var due in await alerts.DueAsync(now))
+        // Once notifications are in (db/016, after db/011): the workspace's default goes to a flow's owner, and each person's
+        // "A flow I own fails" email switch has the last word. Before, as it always was: the creator, no switch.
+        var owners = notifier is not null && await notifier.ReadyAsync();
+        foreach (var due in await alerts.DueAsync(now, owners: owners))
         {
             if (ct.IsCancellationRequested) break;
             if (string.IsNullOrWhiteSpace(due.Email)) continue;
             var since = due.AlertedAt is { } last && last > now - AlertsRepository.Lookback ? last : now - AlertsRepository.Lookback;
             if (!await alerts.ClaimAsync(due.WorkspaceId, due.FlowId, now)) continue; // another instance has it, or it went just now
+            if (owners && !await notifier!.WantsEmailAsync(due.Recipient, Notifications.NotificationKinds.FlowFailed)) continue;
             var (runs, count) = await alerts.FailuresAsync(due.WorkspaceId, due.FlowId, since);
             if (runs.Count == 0) continue;
             if (!await engine.CountEmailAsync(due.WorkspaceId, now, limits.EmailsPerDay))

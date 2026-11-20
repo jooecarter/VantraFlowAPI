@@ -82,7 +82,16 @@ builder.Services.AddScoped<FailureAlerts>();
 builder.Services.AddScoped<ReliabilityRepository>();
 builder.Services.AddScoped<IReliabilityMail, EmailReliabilityMail>();
 builder.Services.AddScoped(sp => new Reliability(sp.GetRequiredService<ReliabilityRepository>(), sp.GetRequiredService<IReliabilityMail>(),
-    sp.GetRequiredService<FlowLimits>(), sp.GetRequiredService<FailureAlerts>().AppBase, sp.GetRequiredService<ILoggerFactory>().CreateLogger<Reliability>()));
+    sp.GetRequiredService<FlowLimits>(), sp.GetRequiredService<FailureAlerts>().AppBase, sp.GetRequiredService<ILoggerFactory>().CreateLogger<Reliability>(),
+    sp.GetRequiredService<VantraFlow.Api.Services.Notifications.Notifier>()));
+// Notifications (db/016): the bell, the Inbox and Settings → Notifications, raised where things happen (best effort), and
+// Settings → Profile on the shared Vantra identity (name, photo, time zone) with the job title kept here.
+builder.Services.AddScoped<NotificationsRepository>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Notifications.INotificationStore>(sp => sp.GetRequiredService<NotificationsRepository>());
+builder.Services.AddScoped<IJobTitleStore>(sp => sp.GetRequiredService<NotificationsRepository>());
+builder.Services.AddScoped<VantraFlow.Api.Services.Notifications.INotifyMail, VantraFlow.Api.Services.Notifications.EmailNotifyMail>();
+builder.Services.AddScoped<VantraFlow.Api.Services.Notifications.Notifier>();
+builder.Services.AddScoped<IProfileStore, ProfileStore>();
 // Insights (db/006 keeps daily totals past the runs' pruning), and the one place it reads a workspace's run limit.
 builder.Services.AddScoped<InsightsRepository>();
 builder.Services.AddScoped<VantraFlow.Api.Services.Insights.IRunLimits, VantraFlow.Api.Services.Insights.PlanRunLimits>();

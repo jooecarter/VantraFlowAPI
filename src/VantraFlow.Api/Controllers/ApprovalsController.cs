@@ -62,6 +62,7 @@ public sealed class ApprovalsController(WorkspacesRepository workspaces, StepsRe
                 : Conflict(new { error = current.Status == "cancelled" ? "Its run was cancelled." : "It has already been decided.", code = "decided", approval = Dto(current, by, now) });
         }
         signal.Poke();
+        if (HttpContext?.RequestServices?.GetService<Services.Notifications.Notifier>() is { } notes) await notes.ApprovalDoneAsync(a.Id);
         return Ok(Dto((await repo.ApprovalAsync(a.Id))!, by, now));
     }
 
@@ -134,6 +135,7 @@ public sealed class ApprovalLinksController(WorkspacesRepository workspaces, Ste
                 : Conflict(new { error = "It has already been decided.", code = "decided", approval = dto with { Approvers = [] } });
         }
         signal.Poke();
+        if (HttpContext?.RequestServices?.GetService<Services.Notifications.Notifier>() is { } notes) await notes.ApprovalDoneAsync(a.Id);
         var done = ApprovalsController.Dto((await repo.ApprovalAsync(a.Id))!, approver, now);
         return Ok(new { approval = done with { Approvers = done.Approvers.Select(x => x with { Email = null }).ToList() } });
     }

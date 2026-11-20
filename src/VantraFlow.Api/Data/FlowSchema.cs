@@ -139,6 +139,28 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N
         return reliabilityReady;
     }
 
+    /// <summary>db/016 (notifications and per-person settings): the index it makes last, by name.</summary>
+    public const string NotificationsProbeSql = @"
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Notifications_Recipient' AND object_id = OBJECT_ID(N'flow.Notifications'))
+            THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END;";
+
+    private volatile bool notificationsReady;
+    private DateTime notificationsCheckedAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Has db/016 run? Until it has, nobody gets notifications (the bell shows the last day's failed runs, as before),
+    /// Settings → Notifications and the job title wait, and every email goes as it always has.
+    /// </summary>
+    public async Task<bool> NotificationsReadyAsync()
+    {
+        if (notificationsReady) return true;
+        if (DateTime.UtcNow - notificationsCheckedAt < NegativeTtl) return false;
+        using var conn = factory.Flow();
+        notificationsReady = await conn.ExecuteScalarAsync<bool>(NotificationsProbeSql);
+        notificationsCheckedAt = DateTime.UtcNow;
+        return notificationsReady;
+    }
+
     private volatile bool invitesReady;
     private DateTime invitesCheckedAt = DateTime.MinValue;
 

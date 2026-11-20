@@ -43,6 +43,7 @@ public sealed class FlowSignal
 /// <item><b>Every five minutes</b>: the plans sweep (<see cref="Billing.Plans.SweepAsync"/>, db/008), and the daily failure
 /// digests that are due (<see cref="Reliability"/>, db/010).</item>
 /// <item><b>After a failed run</b>: auto-pause, for a flow set to switch off after N failures in a row (db/010).</item>
+/// <item><b>After a finished run</b>: its notifications (db/016): a failure for its owner, a scheduled report sent.</item>
 /// <item><b>Hourly</b>: prune old claims, dead events, and runs older than <c>Flow:KeepRunsDays</c>.</item>
 /// </list>
 /// Before db/001 it checks once a minute and does nothing else. Multi-instance safe; App Service needs
@@ -167,6 +168,7 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
                         DurationMs = EngineRepository.DurationOf(run.StartedAt, savedAt),
                     });
                 if (state.Status == RunStatuses.Failed && !state.Test) await AutoPauseAsync(sp, state, ct);
+                if (!state.Test && state.Status is RunStatuses.Succeeded or RunStatuses.Failed) await NotifyAsync(sp, state, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -239,6 +241,8 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
             catch (Exception ex) { log.LogInformation(ex, "Form and date ledger prune failed"); }
             try { var f = sp.GetRequiredService<RunFilesRepository>(); if (await f.ReadyAsync()) await f.PruneAsync(now); }
             catch (Exception ex) { log.LogInformation(ex, "Run files prune failed"); }
+            try { var n = sp.GetRequiredService<NotificationsRepository>(); if (await n.ReadyAsync()) await n.PruneAsync(now - Notifications.NotificationRules.Keep); }
+            catch (Exception ex) { log.LogInformation(ex, "Notifications prune failed"); }
         }
         if (events.Count > 0 || runs.Count > 0) sp.GetRequiredService<FlowSignal>().Poke();
         return events.Count > 0 || runs.Count > 0;
@@ -267,6 +271,22 @@ public sealed class FlowWorker(IServiceScopeFactory scopes, FlowSignal signal, I
                 await sp.GetRequiredService<Reliability>().AfterFailureAsync(state.WorkspaceId, state.FlowId, state.Error, DateTime.UtcNow);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogWarning(ex, "Auto-pause check for flow {Flow} failed", state.FlowId); }
+    }
+
+    /// <summary>
+    /// After a finished run (db/016): a failure counts up its owner's note for the hour; a scheduled run that made an Orbit
+    /// report and emailed it tells its owner who it went to. Never fails the tick.
+    /// </summary>
+    private async Task NotifyAsync(IServiceProvider sp, RunState state, CancellationToken ct)
+    {
+        try
+        {
+            var notes = sp.GetRequiredService<Notifications.Notifier>();
+            if (state.Status == RunStatuses.Failed) await notes.FlowFailedAsync(state.WorkspaceId, state.FlowId, state.Id);
+            else if (Notifications.Notifier.ReportRecipients(state.Definition, state.Steps) is > 0 and var people)
+                await notes.ReportSentAsync(state.WorkspaceId, state.FlowId, state.Id, people);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested) { log.LogInformation(ex, "Notifications for run {Run} failed", state.Id); }
     }
 
     private async Task ScheduleAsync(IServiceProvider sp, DateTime now, CancellationToken ct)
