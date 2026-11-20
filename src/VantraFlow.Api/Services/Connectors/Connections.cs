@@ -19,7 +19,8 @@ public sealed class AppConnectors(OrbitApi orbit, ProjectsApi projects)
 /// Orbit table a flow listens to, one per Projects workspace — removing any no flow needs any more.
 /// </summary>
 public sealed class Connections(
-    ConnectionsRepository repo, FlowsRepository flows, AppConnectors apps, FlowSecrets secrets, IConfiguration config, ILogger<Connections> log)
+    ConnectionsRepository repo, FlowsRepository flows, AppConnectors apps, FlowSecrets secrets, IConfiguration config, ILogger<Connections> log,
+    Notifications.Notifier? notifier = null)
 {
     public string ApiBase => (config["App:ApiBaseUrl"] is { Length: > 0 } u ? u : "https://vantraflow.azurewebsites.net").TrimEnd('/');
 
@@ -53,7 +54,7 @@ public sealed class Connections(
         }
         catch (AppRevokedException)
         {
-            await LostAsync(open.Row, $"Disconnected in {open.Api.AppName}.");
+            await LostAsync(open.Row, $"Disconnected in {open.Api.AppName}.", notify: true);
             throw;
         }
         catch (AppUnavailableException e)
@@ -63,13 +64,19 @@ public sealed class Connections(
         }
     }
 
-    /// <summary>The connection is gone: revoked here, and the flows that need the app switched off with the reason.</summary>
-    public async Task LostAsync(ConnectionRow row, string reason)
+    /// <summary>
+    /// The connection is gone: revoked here, and the flows that need the app switched off with the reason. With
+    /// <paramref name="notify"/> (lost on the app's side, not disconnected here), who connected it, the owners and admins hear.
+    /// </summary>
+    public async Task LostAsync(ConnectionRow row, string reason, bool notify = false)
     {
         await repo.RevokeAsync(row.Id, reason);
+        var name = apps.For(row.App)?.AppName ?? row.App;
+        var paused = 0;
         foreach (var id in await flows.UsingAppAsync(row.WorkspaceId, row.App))
-            await flows.PauseAsync(row.WorkspaceId, id, $"{apps.For(row.App)?.AppName ?? row.App} was disconnected.");
+            if (await flows.PauseAsync(row.WorkspaceId, id, $"{name} was disconnected.")) paused++;
         log.LogInformation("Connection {Connection} ({App}) lost", row.Id, row.App);
+        if (notify && notifier is not null) await notifier.ConnectionAsync(row.WorkspaceId, row.Id, name, row.ConnectedBy, paused);
     }
 
     /// <summary>Disconnect from the studio: Flow's webhooks and its key removed in the app (best effort), then revoked here.</summary>
@@ -110,7 +117,7 @@ public sealed class Connections(
             var id = FlowSecrets.NewId("fsb_");
             AppHook hook;
             try { hook = await api.SubscribeAsync(key, scope, ReceiverUrl(app, id), ct); }
-            catch (AppRevokedException) { await LostAsync(row, $"Disconnected in {api.AppName}."); throw; }
+            catch (AppRevokedException) { await LostAsync(row, $"Disconnected in {api.AppName}.", notify: true); throw; }
             await repo.InsertSubscriptionAsync(new SubscriptionRow(id, workspaceId, row.Id, app, scope, hook.Id,
                 secrets.Protect(hook.Secret, workspaceId, id), app == "orbit" ? string.Join(",", OrbitApi.EventsFor(scope)) : ProjectsApi.Events, DateTime.UtcNow, null));
         }

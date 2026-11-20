@@ -36,11 +36,17 @@ WHERE ISNULL(f.AlertOnFailure, w.AlertOnFailure) = 1
               WHERE r.FlowId = f.Id AND r.WorkspaceId = f.WorkspaceId AND r.Status = N'failed' AND r.Test = 0
                 AND r.FinishedAt >= @Lookback AND (f.AlertedAt IS NULL OR r.FinishedAt > f.AlertedAt));";
 
-    /// <summary>The flows with failures since their last alert, whose last alert is an hour old (or never sent).</summary>
-    public async Task<IReadOnlyList<AlertDue>> DueAsync(DateTime now, int take = 50)
+    /// <summary>As <see cref="DueSql"/>, the default going to the flow's owner (db/011's OwnerId; its creator unless changed).</summary>
+    public static readonly string DueOwnerSql = DueSql.Replace("ISNULL(f.AlertTo, f.CreatedBy)", "ISNULL(f.AlertTo, ISNULL(f.OwnerId, f.CreatedBy))");
+
+    /// <summary>
+    /// The flows with failures since their last alert, whose last alert is an hour old (or never sent). With
+    /// <paramref name="owners"/> (once db/016, so db/011, has run) the default alert goes to the flow's owner.
+    /// </summary>
+    public async Task<IReadOnlyList<AlertDue>> DueAsync(DateTime now, int take = 50, bool owners = false)
     {
         using var conn = factory.Flow();
-        return (await conn.QueryAsync<AlertDue>(DueSql, new { Take = take, HourAgo = now - Every, Lookback = now - Lookback })).ToList();
+        return (await conn.QueryAsync<AlertDue>(owners ? DueOwnerSql : DueSql, new { Take = take, HourAgo = now - Every, Lookback = now - Lookback })).ToList();
     }
 
     /// <summary>The claim: true for exactly one caller when the flow's last alert is an hour old.</summary>

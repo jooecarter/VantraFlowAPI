@@ -171,7 +171,7 @@ public sealed class OAuthController(
         var conns = team.Length > 0 ? await repo.ByTeamAsync(team) : [];
         if (type is "app_uninstalled" or "tokens_revoked")
         {
-            foreach (var c in conns) await connections.LostAsync(c, "Vantra Flow was removed from Slack.");
+            foreach (var c in conns) await connections.LostAsync(c, "Vantra Flow was removed from Slack.", notify: true);
             return Ok(new { accepted = true });
         }
         if (SlackMessage(ev) is not { } data) return Ok(new { ignored = true });

@@ -28,7 +28,7 @@ public sealed record OAuthSession(OAuthConnectionRow Row, string Token, OAuthPro
 /// </summary>
 public sealed class OAuthConnections(
     OAuthRepository repo, FlowsRepository flows, OAuthProviders providers, FlowSecrets secrets, EngineRepository engine, IConfiguration config,
-    FlowSchema schema, ILogger<OAuthConnections> log)
+    FlowSchema schema, ILogger<OAuthConnections> log, Notifications.Notifier? notifier = null)
 {
     public static readonly TimeSpan StateLife = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan RefreshAhead = TimeSpan.FromMinutes(2);
@@ -137,7 +137,7 @@ public sealed class OAuthConnections(
         {
             if (Refresh(row) is not { } refresh)
             {
-                if (forceRefresh || row.ExpiresAt < DateTime.UtcNow) { await LostAsync(row, $"{provider.Name} needs you to sign in again."); throw new AppRevokedException(provider.Name); }
+                if (forceRefresh || row.ExpiresAt < DateTime.UtcNow) { await LostAsync(row, $"{provider.Name} needs you to sign in again.", notify: true); throw new AppRevokedException(provider.Name); }
             }
             else
             {
@@ -145,7 +145,7 @@ public sealed class OAuthConnections(
                 try { fresh = await provider.RefreshAsync(refresh, Grant(row, token, refresh), ct); }
                 catch (OAuthUnauthorizedException)
                 {
-                    await LostAsync(row, $"{provider.Name} needs you to sign in again.");
+                    await LostAsync(row, $"{provider.Name} needs you to sign in again.", notify: true);
                     throw new AppRevokedException(provider.Name);
                 }
                 if (fresh is not null && fresh.AccessToken.Length > 0)
@@ -193,6 +193,8 @@ public sealed class OAuthConnections(
             catch (OAuthUnauthorizedException)
             {
                 await repo.TouchAsync(session.Row.Id, $"{session.Provider.Name} refused the sign-in. Reconnect it from Connections.");
+                if (notifier is not null)
+                    await notifier.ConnectionAsync(session.Row.WorkspaceId, session.Row.Id, session.Provider.Name, session.Row.ConnectedBy, 0);
                 throw new AppRefusedException(401, $"{session.Provider.Name} refused the connection's sign-in. Reconnect it from Connections.", "reconnect");
             }
         }
@@ -203,14 +205,19 @@ public sealed class OAuthConnections(
         }
     }
 
-    /// <summary>The connection is gone: revoked here, and the flows that need the app switched off with the reason.</summary>
-    public async Task LostAsync(OAuthConnectionRow row, string reason)
+    /// <summary>
+    /// The connection is gone: revoked here, and the flows that need the app switched off with the reason. With
+    /// <paramref name="notify"/> (the provider ended it, not a disconnect here), who connected it, the owners and admins hear.
+    /// </summary>
+    public async Task LostAsync(OAuthConnectionRow row, string reason, bool notify = false)
     {
         await repo.RevokeAsync(row.Id, reason);
         var name = providers.For(row.Provider)?.Name ?? row.Provider;
+        var paused = 0;
         foreach (var id in await flows.UsingAppAsync(row.WorkspaceId, row.Provider))
-            await flows.PauseAsync(row.WorkspaceId, id, $"{name} was disconnected.");
+            if (await flows.PauseAsync(row.WorkspaceId, id, $"{name} was disconnected.")) paused++;
         log.LogInformation("OAuth connection {Connection} ({Provider}) lost", row.Id, row.Provider);
+        if (notify && notifier is not null) await notifier.ConnectionAsync(row.WorkspaceId, row.Id, name, row.ConnectedBy, paused);
     }
 
     /// <summary>Disconnect from the studio: the grant revoked at the provider (where it can be), then here.</summary>

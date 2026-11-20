@@ -159,7 +159,7 @@ public static class ReliabilityRules
 /// auto-pause after each failed run. Neither does anything before db/010 has run or without email set up (a flow is
 /// still paused then; only the email is skipped).
 /// </summary>
-public sealed class Reliability(IReliabilityStore store, IReliabilityMail mail, FlowLimits limits, string appBase, ILogger log)
+public sealed class Reliability(IReliabilityStore store, IReliabilityMail mail, FlowLimits limits, string appBase, ILogger log, Notifications.Notifier? notifier = null)
 {
     /// <summary>Sends the digests due at <paramref name="now"/>; how many workspaces got one.</summary>
     public async Task<int> SendDigestsAsync(DateTime now, CancellationToken ct)
@@ -202,6 +202,13 @@ public sealed class Reliability(IReliabilityStore store, IReliabilityMail mail, 
         if (!ReliabilityRules.ShouldPause(n, last)) return false;
         if (!await store.PauseAsync(workspaceId, flowId, ReliabilityRules.PauseReason(n))) return false;
         log.LogInformation("Flow {Flow} was paused after {Failures} failures in a row", flowId, n);
+        // Once notifications are in (db/016): the flow's owner, the owners and admins hear in the app, and by email as
+        // each has chosen ("A flow is paused"), instead of the owners' email below.
+        if (notifier is not null && await notifier.ReadyAsync())
+        {
+            await notifier.FlowPausedAsync(workspaceId, flowId, Notifications.NotificationRules.PausedAfter(n));
+            return true;
+        }
         if (!mail.CanSend()) return true;
         var (subject, html) = ReliabilityRules.Paused(flow.FlowName, flow.WorkspaceName, n, error, appBase, workspaceId, flowId);
         foreach (var to in await store.RecipientsAsync(workspaceId, admins: false))

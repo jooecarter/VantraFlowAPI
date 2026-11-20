@@ -13,7 +13,8 @@ namespace VantraFlow.Api.Services.Connectors;
 /// workspace's daily cap. Never logs a link.
 /// </summary>
 public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, WorkspacesRepository workspaces, FlowsRepository flows, EmailService email,
-    EngineRepository engine, FlowLimits limits, FlowSecrets secrets, IConfiguration config, ILogger<ApprovalGate> log, Developer.IDevEvents? events = null)
+    EngineRepository engine, FlowLimits limits, FlowSecrets secrets, IConfiguration config, ILogger<ApprovalGate> log, Developer.IDevEvents? events = null,
+    Notifications.Notifier? notifier = null)
     : IApprovalGate
 {
     public string AppBase => (config["App:BaseUrl"] is { Length: > 0 } u ? u : "https://vantraflow-web.azurewebsites.net").TrimEnd('/');
@@ -32,6 +33,9 @@ public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, Worksp
         var saved = await repo.InsertApprovalAsync(row);
         // Asked for the first time (not a run picked up again): outgoing webhooks hear of it (db/012).
         if (saved.Id == row.Id && events is not null) await events.ApprovalRequestedAsync(saved);
+        // The approvers' bells (db/016): "… is waiting for you". Their email below is the notification's email.
+        if (saved.Id == row.Id && notifier is not null)
+            await notifier.ApprovalAsync(ask.WorkspaceId, saved.Id, saved.Title, saved.Details, approvers.Select(a => a.VantraId));
         var notified = 0;
         if (saved.Id == row.Id && email.CanSend())
         {
@@ -40,6 +44,8 @@ public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, Worksp
             {
                 if (ct.IsCancellationRequested) break;
                 if (string.IsNullOrWhiteSpace(a.Email)) continue;
+                // Settings → Notifications: someone who's switched approval emails off sees it in the app only.
+                if (notifier is not null && !await notifier.WantsEmailAsync(a.VantraId, Notifications.NotificationKinds.Approval)) continue;
                 if (!await engine.CountEmailAsync(ask.WorkspaceId, DateTime.UtcNow, limits.EmailsPerDay))
                 {
                     log.LogInformation("An approval email for run {Run} wasn't sent: the workspace's emails for today are used", ask.RunId);
@@ -59,7 +65,11 @@ public sealed class ApprovalGate(StepsRepository repo, FlowSchema schema, Worksp
     public async Task<ApprovalState?> StateAsync(Guid workspaceId, string approvalId, CancellationToken ct) =>
         await repo.ApprovalAsync(approvalId) is { } a && a.WorkspaceId == workspaceId ? State(a) : null;
 
-    public Task ExpireAsync(string approvalId, DateTime now) => repo.ExpireAsync(approvalId, now);
+    public async Task ExpireAsync(string approvalId, DateTime now)
+    {
+        await repo.ExpireAsync(approvalId, now);
+        if (notifier is not null) await notifier.ApprovalDoneAsync(approvalId);
+    }
 
     public static ApprovalState State(ApprovalRow a, int notified = 0) =>
         new(a.Id, a.Status, a.DecidedByName, a.DecidedAt, a.Comment, a.DecidedVia, Approvers(a.Approvers).Select(x => x.Name ?? x.Email ?? "Someone").ToList(),

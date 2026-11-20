@@ -68,6 +68,7 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
                 if (!answer.Ok) return Answer(answer);
                 var dto = (SharedAcceptDto)answer.Body!;
                 var flowId = after?.Find(sub)?.Has(SharedApps.Flow) == true ? after.LocalId(SharedApps.Flow) : null;
+                if (flowId is { } joined && !dto.AlreadyMember) await NotifyJoinedAsync(joined, sub, name ?? email);
                 return Ok(new { workspaceId = flowId?.ToString(), workspaceName = dto.WorkspaceName, alreadyMember = dto.AlreadyMember, apps = dto.Apps });
             }
             if (await JoinSharedFirstAsync(own, sub, email) is { } refused) return refused;
@@ -79,6 +80,7 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
         {
             case InviteOutcome.Accept:
                 log.LogInformation("Someone joined workspace {Workspace} by invitation", r.Invite.WorkspaceId);
+                await NotifyJoinedAsync(r.Invite.WorkspaceId, sub, name ?? email);
                 return Ok(new AcceptInviteDto(r.Invite.WorkspaceId.ToString(), ws, false));
             case InviteOutcome.AlreadyMember:
                 return Ok(new AcceptInviteDto(r.Invite.WorkspaceId.ToString(), ws, true));
@@ -92,6 +94,12 @@ public sealed class InviteAcceptController(IInviteStore invites, IUserDirectory 
                 return Closed(r.Outcome, r.Invite);
         }
     }
+
+    /// <summary>The workspace's owners and admins hear that someone joined (db/016; best effort).</summary>
+    private Task NotifyJoinedAsync(Guid workspaceId, string vantraId, string? name) =>
+        HttpContext?.RequestServices?.GetService<Services.Notifications.Notifier>() is { } notes
+            ? notes.MemberAsync(workspaceId, vantraId, name, "joined", vantraId)
+            : Task.CompletedTask;
 
     /// <summary>
     /// One of Flow's own invitations to a workspace whose members are now shared: the person joins the shared record
